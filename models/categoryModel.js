@@ -15,7 +15,7 @@ const categorySchema = new mongoose.Schema({
   },
   image: {
     type: String,
-    default: 'http://localhost:3001/images/category.jpg'
+    default: 'http://localhost:3000/images/category.jpg'
   },
   createdAt: {
     type: Date,
