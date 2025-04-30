@@ -35,7 +35,7 @@ const createProduct = async (req, res) => {
       );
       imageUrls = await Promise.all(uploads);
     } else {
-      imageUrls = ["https://res.cloudinary.com/demo/image/upload/sample.jpg"];
+      imageUrls = ["http://localhost:3000/images/product.jpg"];
     }
 
     const product = new Product({
@@ -51,7 +51,7 @@ const createProduct = async (req, res) => {
     res.status(201).json(product);
   } catch (error) {
     console.error("Error creating product:", error);
-    res.status(500).json({ message: "Nepavyko sukurti produkto" });
+    res.status(500).json({ message: "Failed to create product" });
   }
 };
 

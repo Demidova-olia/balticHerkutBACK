@@ -25,15 +25,17 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 // const userAPIRoutes = require("./api/users");
-const productsAPIRoutes = require("./api/productRouts");
-// const categoriesAPIRoutes = require("./api/categoryRouts");
+const productsAPIRoutes = require("./api/productRoutes");
+const categoriesAPIRoutes = require("./api/categoryRoutes");
+const subcategoryRoutes = require("./api/subcategoryRoutes");
 // const ordersAPIRoutes = require("./api/orders");
-// const adminAPIRoutes = require("./api/adminRouts");
-// const reviewAPIRoutes = require("./api/reviewRouts")
+// const adminAPIRoutes = require("./api/adminRoutes");
+// const reviewAPIRoutes = require("./api/reviewRoutes")
 
 // app.use("/api/users", userAPIRoutes);
 app.use("/api/products", productsAPIRoutes);
-// app.use("/api/categories", categoriesAPIRoutes);
+app.use("/api/categories", categoriesAPIRoutes);
+app.use("/api/subcategories", subcategoryRoutes);
 // app.use("/api/orders", ordersAPIRoutes);
 // app.use("/api/admin", adminAPIRoutes);
 // app.use("/api/product", reviewAPIRoutes);
