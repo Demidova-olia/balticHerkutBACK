@@ -1,5 +1,6 @@
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
+const Subcategory = require("../models/subcategoryModel");
 const cloudinary = require("cloudinary").v2;
 
 const uploadToCloudinary = (fileBuffer, filename) => {
@@ -19,12 +20,26 @@ const uploadToCloudinary = (fileBuffer, filename) => {
 
 const createProduct = async (req, res) => {
   try {
-    const { name, description, price, category, stock } = req.body;
+    const { name, description, price, category, subcategory, stock } = req.body;
     const files = req.files;
 
     const existingCategory = await Category.findById(category);
     if (!existingCategory) {
-      return res.status(400).json({ message: "Kategorija neegzistuoja" });
+      return res.status(400).json({ message: "Category does not exist" });
+    }
+
+    let subcategoryId = null;
+    if (subcategory) {
+      const existingSubcategory = await Subcategory.findOne({
+        name: subcategory,
+        parent: category,
+      });
+
+      if (!existingSubcategory) {
+        return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
+      }
+
+      subcategoryId = existingSubcategory._id;
     }
 
     let imageUrls = [];
@@ -43,6 +58,7 @@ const createProduct = async (req, res) => {
       description,
       price,
       category,
+      subcategory: subcategoryId,
       stock,
       images: imageUrls,
     });
@@ -64,6 +80,7 @@ const getProducts = async (req, res) => {
     const totalProducts = await Product.countDocuments();
     const products = await Product.find()
       .populate("category")
+      .populate("subcategory")
       .skip(skip)
       .limit(limit);
 
@@ -84,7 +101,9 @@ const getProductsByCategory = async (req, res) => {
       return res.status(404).json({ message: "Category not found" });
     }
 
-    const products = await Product.find({ category: category._id }).populate("category");
+    const products = await Product.find({ category: category._id })
+      .populate("category")
+      .populate("subcategory");
 
     res.json(products);
   } catch (err) {
@@ -96,10 +115,12 @@ const getProductsByCategory = async (req, res) => {
 const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
-    const product = await Product.findById(id).populate("category");
+    const product = await Product.findById(id)
+      .populate("category")
+      .populate("subcategory");
 
     if (!product) {
-      return res.status(404).send({ error: "Product Not found" });
+      return res.status(404).send({ error: "Product not found" });
     }
 
     res.send(product);
@@ -118,24 +139,44 @@ const updateProduct = async (req, res) => {
     }
 
     if (req.user?.role !== "ADMIN") {
-      return res.status(403).json({ message: "Permission denied. Only ADMIN can update" });
+      return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
     }
 
-    const { name, price, category, image } = req.body;
+    const { name, price, category, subcategory, image } = req.body;
 
     if (price !== undefined && price <= 0) {
-      return res.status(400).json({ message: "Price can't be 0" });
+      return res.status(400).json({ message: "Price must be greater than 0" });
     }
 
     const updates = {};
     if (name !== undefined) updates.name = name;
     if (price !== undefined) updates.price = price;
-    if (category !== undefined) updates.category = category;
+    if (category !== undefined) {
+      const existingCategory = await Category.findById(category);
+      if (!existingCategory) {
+        return res.status(400).json({ message: "Category does not exist" });
+      }
+      updates.category = category;
+    }
+
+    if (subcategory !== undefined) {
+      const existingSubcategory = await Subcategory.findOne({
+        _id: subcategory,
+        parent: updates.category || product.category,
+      });
+
+      if (!existingSubcategory) {
+        return res.status(400).json({ message: "Subcategory not found or does not belong to this category" });
+      }
+
+      updates.subcategory = subcategory;
+    }
+
     if (image !== undefined) updates.image = image;
 
     const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
       new: true,
-    }).populate("category");
+    }).populate("category").populate("subcategory");
 
     res.send(updatedProduct);
   } catch (error) {
@@ -157,7 +198,8 @@ const searchProducts = async (req, res) => {
       $or: [{ name: regex }, { description: regex }],
     })
       .limit(30)
-      .populate("category");
+      .populate("category")
+      .populate("subcategory");
 
     res.status(200).json(products);
   } catch (error) {
@@ -170,10 +212,12 @@ const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const deletedProduct = await Product.findByIdAndDelete(id).populate("category");
+    const deletedProduct = await Product.findByIdAndDelete(id)
+      .populate("category")
+      .populate("subcategory");
 
     if (!deletedProduct) {
-      return res.status(404).send({ error: "Product Not found" });
+      return res.status(404).send({ error: "Product not found" });
     }
 
     res.send({ message: "Product was removed", data: deletedProduct });
