@@ -43,7 +43,7 @@ app.use("/api/admin", adminAPIRoutes);
 app.use("/api/product", reviewAPIRoutes);
 
 app.get("/", (req, res) => {
-    res.render("app");
+    res.render("index");
   });
 
 app.use((req, res, next) => {
