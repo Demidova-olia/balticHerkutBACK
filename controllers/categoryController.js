@@ -16,7 +16,10 @@ const createCategory = async (req, res) => {
 
 const getCategories = async (req, res) => {
   try {
-    const categories = await Category.find();
+    const categories = await Category.find().lean();
+    for (const cat of categories) {
+        cat.subcategories = await Subcategory.find({ parent: cat._id });
+      }
     res.json(categories);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch categories", error: err.message });

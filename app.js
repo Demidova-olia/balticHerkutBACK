@@ -24,23 +24,23 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
-// const userAPIRoutes = require("./api/users");
+const userAPIRoutes = require("./api/usersRoutes");
 const productsAPIRoutes = require("./api/productRoutes");
 const categoriesAPIRoutes = require("./api/categoryRoutes");
 const subcategoryAPIRoutes = require("./api/subcategoryRoutes");
 const favoriteAPIRoutes = require("./api/favoriteRoutes");
-// const ordersAPIRoutes = require("./api/orders");
-// const adminAPIRoutes = require("./api/adminRoutes");
-// const reviewAPIRoutes = require("./api/reviewRoutes")
+const ordersAPIRoutes = require("./api/ordersRoutes");
+const adminAPIRoutes = require("./api/adminRoutes");
+const reviewAPIRoutes = require("./api/reviewRoutes")
 
-// app.use("/api/users", userAPIRoutes);
+app.use("/api/users", userAPIRoutes);
 app.use("/api/products", productsAPIRoutes);
 app.use("/api/categories", categoriesAPIRoutes);
 app.use("/api/subcategories", subcategoryAPIRoutes);
 app.use("/api/favorites", favoriteAPIRoutes);
-// app.use("/api/orders", ordersAPIRoutes);
-// app.use("/api/admin", adminAPIRoutes);
-// app.use("/api/product", reviewAPIRoutes);
+app.use("/api/orders", ordersAPIRoutes);
+app.use("/api/admin", adminAPIRoutes);
+app.use("/api/product", reviewAPIRoutes);
 
 app.get("/", (req, res) => {
     res.render("app");
