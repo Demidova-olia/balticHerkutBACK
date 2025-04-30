@@ -5,6 +5,7 @@ const {
   getUsers,
   deleteUser,
   getMyOrders,
+  getProfile,
 } = require("../controllers/userController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const rolesMiddleware = require("../middlewares/rolesMiddleware");
@@ -17,6 +18,6 @@ router.post("/login", login);
 router.get("/", authMiddleware, rolesMiddleware(ROLES.ADMIN), getUsers);
 router.delete("/:id", authMiddleware, rolesMiddleware(ROLES.ADMIN), deleteUser);
 router.get("/orders", authMiddleware, getMyOrders);
-router.get('/profile', authMiddleware, userController.getProfile);
+router.get('/profile', authMiddleware, getProfile);
 
 module.exports = router;

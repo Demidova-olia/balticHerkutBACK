@@ -19,57 +19,53 @@ const uploadToCloudinary = (fileBuffer, filename) => {
 };
 
 const createProduct = async (req, res) => {
-  try {
-    const { name, description, price, category, subcategory, stock } = req.body;
-    const files = req.files;
-
-    const existingCategory = await Category.findById(category);
-    if (!existingCategory) {
-      return res.status(400).json({ message: "Category does not exist" });
-    }
-
-    let subcategoryId = null;
-    if (subcategory) {
-      const existingSubcategory = await Subcategory.findOne({
-        name: subcategory,
-        parent: category,
-      });
-
-      if (!existingSubcategory) {
-        return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
+    try {
+      const { name, description, price, category, subcategory, stock } = req.body;
+  
+      const existingCategory = await Category.findById(category);
+      if (!existingCategory) {
+        return res.status(400).json({ message: "Category does not exist" });
       }
-
-      subcategoryId = existingSubcategory._id;
+  
+      let subcategoryId = null;
+      if (subcategory) {
+        const existingSubcategory = await Subcategory.findOne({
+          name: subcategory,
+          parent: category,
+        });
+  
+        if (!existingSubcategory) {
+          return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
+        }
+  
+        subcategoryId = existingSubcategory._id;
+      }
+  
+      let imageUrls = [];
+      if (req.files && req.files.length > 0) {
+        imageUrls = req.files.map(file => file.path);
+      } else {
+        imageUrls = ["http://localhost:3000/images/product.jpg"];
+      }
+  
+      const product = new Product({
+        name,
+        description,
+        price,
+        category,
+        subcategory: subcategoryId,
+        stock,
+        images: imageUrls,
+      });
+  
+      await product.save();
+      res.status(201).json(product);
+    } catch (error) {
+      console.error("Error creating product:", error);
+      res.status(500).json({ message: "Failed to create product" });
     }
-
-    let imageUrls = [];
-
-    if (files && files.length > 0) {
-      const uploads = files.map((file, index) =>
-        uploadToCloudinary(file.buffer, `${Date.now()}-${index}`)
-      );
-      imageUrls = await Promise.all(uploads);
-    } else {
-      imageUrls = ["http://localhost:3000/images/product.jpg"];
-    }
-
-    const product = new Product({
-      name,
-      description,
-      price,
-      category,
-      subcategory: subcategoryId,
-      stock,
-      images: imageUrls,
-    });
-
-    await product.save();
-    res.status(201).json(product);
-  } catch (error) {
-    console.error("Error creating product:", error);
-    res.status(500).json({ message: "Failed to create product" });
-  }
-};
+  };
+  
 
 const getProducts = async (req, res) => {
   try {
@@ -130,59 +126,64 @@ const getProductById = async (req, res) => {
 };
 
 const updateProduct = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const product = await Product.findById(id);
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
-
-    if (req.user?.role !== "ADMIN") {
-      return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
-    }
-
-    const { name, price, category, subcategory, image } = req.body;
-
-    if (price !== undefined && price <= 0) {
-      return res.status(400).json({ message: "Price must be greater than 0" });
-    }
-
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (price !== undefined) updates.price = price;
-    if (category !== undefined) {
-      const existingCategory = await Category.findById(category);
-      if (!existingCategory) {
-        return res.status(400).json({ message: "Category does not exist" });
+    try {
+      const { id } = req.params;
+  
+      const product = await Product.findById(id);
+      if (!product) {
+        return res.status(404).json({ message: "Product not found" });
       }
-      updates.category = category;
-    }
-
-    if (subcategory !== undefined) {
-      const existingSubcategory = await Subcategory.findOne({
-        _id: subcategory,
-        parent: updates.category || product.category,
-      });
-
-      if (!existingSubcategory) {
-        return res.status(400).json({ message: "Subcategory not found or does not belong to this category" });
+  
+      if (req.user?.role !== "ADMIN") {
+        return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
       }
-
-      updates.subcategory = subcategory;
+  
+      const { name, price, category, subcategory, image } = req.body;
+      const updates = {};
+  
+      if (req.files && req.files.length > 0) {
+        updates.images = req.files.map(file => file.path);
+      }
+  
+      if (price !== undefined && price <= 0) {
+        return res.status(400).json({ message: "Price must be greater than 0" });
+      }
+  
+      if (name !== undefined) updates.name = name;
+      if (price !== undefined) updates.price = price;
+      if (category !== undefined) {
+        const existingCategory = await Category.findById(category);
+        if (!existingCategory) {
+          return res.status(400).json({ message: "Category does not exist" });
+        }
+        updates.category = category;
+      }
+  
+      if (subcategory !== undefined) {
+        const existingSubcategory = await Subcategory.findOne({
+          _id: subcategory,
+          parent: updates.category || product.category,
+        });
+  
+        if (!existingSubcategory) {
+          return res.status(400).json({ message: "Subcategory not found or does not belong to this category" });
+        }
+  
+        updates.subcategory = subcategory;
+      }
+  
+      if (image !== undefined) updates.image = image;
+  
+      const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
+        new: true,
+      }).populate("category").populate("subcategory");
+  
+      res.send(updatedProduct);
+    } catch (error) {
+      res.status(500).send(error);
     }
-
-    if (image !== undefined) updates.image = image;
-
-    const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
-      new: true,
-    }).populate("category").populate("subcategory");
-
-    res.send(updatedProduct);
-  } catch (error) {
-    res.status(500).send(error);
-  }
-};
+  };
+  
 
 const searchProducts = async (req, res) => {
   try {

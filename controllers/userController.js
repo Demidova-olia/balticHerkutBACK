@@ -119,24 +119,35 @@ const deleteUser = async (req, res) => {
   }
 };
 
-// const getMyOrders = async (req, res) => {
-//   try {
-//     const userId = req.user._id;
+const getMyOrders = async (req, res) => {
+  try {
+    const userId = req.user._id;
 
-//     const orders = await Order.find({ user: userId })
-//       .populate("items.productId", "title price image");
+    const orders = await Order.find({ user: userId })
+      .populate("items.productId", "title price image");
 
-//     res.status(200).json(orders);
-//   } catch (error) {
-//     console.error("Error while retrieving user orders:", error);
-//     res.status(500).json({ message: "Failed to retrieve orders", error });
-//   }
-// };
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error while retrieving user orders:", error);
+    res.status(500).json({ message: "Failed to retrieve orders", error });
+  }
+};
+const getProfile = async (req, res) => {
+    try {
+      const user = await User.findById(req.user.id).select('-password');
+      if (!user) return res.status(404).send({ message: "User not found" });
+  
+      res.status(200).send(user);
+    } catch (err) {
+      res.status(500).send({ message: "Server error", error: err });
+    }
+  };
 
 module.exports = {
   register,
   login,
   getUsers,
   deleteUser,
-//   getMyOrders,
+  getMyOrders,
+  getProfile,
 };

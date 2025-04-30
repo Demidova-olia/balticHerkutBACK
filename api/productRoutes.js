@@ -11,7 +11,7 @@ const {
 const rolesMiddleware = require("../middlewares/rolesMiddleware");
 const authMiddleware = require("../middlewares/authMiddleware");
 const ROLES = require("../config/roles");
-const productImagesMiddleware = require("../middlewares/productImageMiddleware");
+const upload = require("../middlewares/cloudinary");
 
 const router = express.Router();
 
@@ -19,12 +19,18 @@ router.get("/search", searchProducts);
 router.get("/", getProducts);
 router.get("/category/:categoryName", getProductsByCategory);
 router.get("/:id", getProductById);
-router.post("/", productImagesMiddleware, createProduct);
+router.post(
+  "/",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  upload.array("images", 5),
+  createProduct
+);
 router.put(
   "/:id",
   authMiddleware,
-  productImagesMiddleware,
   rolesMiddleware(ROLES.ADMIN),
+  upload.array("images", 5),
   updateProduct
 );
 router.delete(

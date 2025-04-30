@@ -7,7 +7,7 @@ const {
 
 const router = express.Router();
 
-const authMiddleware = require("../middleware/authMiddleware");
+const authMiddleware = require("../middlewares/authMiddleware");
 
 router.use(authMiddleware); 
 
