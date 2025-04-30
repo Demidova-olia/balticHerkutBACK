@@ -1,17 +1,19 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
+const process = require("process");
 
-const connectDB = async () => {
-  try {
-    await mongoose.connect(process.env.DB_URL, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log('MongoDB connected...');
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
-};
+mongoose
+  .connect(process.env.DB_URL)
+  .then(() => {
+    console.log("MongoDB Connected");
+  })
+  .catch((error) => {
+    console.log("Failed to connect to MongoDB:", error);
+  });
 
-module.exports = connectDB;
+process.on("SIGINT", () => {
+  mongoose.connection.close(() => {
+    console.log("MongoDB disconnected");
+    process.exit(0);
+  });
+});
