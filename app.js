@@ -29,7 +29,7 @@ const productsAPIRoutes = require("./api/productRoutes");
 const categoriesAPIRoutes = require("./api/categoryRoutes");
 const subcategoryAPIRoutes = require("./api/subcategoryRoutes");
 const favoriteAPIRoutes = require("./api/favoriteRoutes");
-const ordersAPIRoutes = require("./api/ordersRoutes");
+const ordersAPIRoutes = require("./api/orderRoutes");
 const adminAPIRoutes = require("./api/adminRoutes");
 const reviewAPIRoutes = require("./api/reviewRoutes")
 
