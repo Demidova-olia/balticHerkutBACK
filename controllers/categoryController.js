@@ -1,4 +1,5 @@
 const Category = require("../models/categoryModel");
+const Subcategory = require('../models/subcategoryModel');
 
 const createCategory = async (req, res) => {
   if (req.user.role !== 'ADMIN') {
@@ -53,10 +54,28 @@ const deleteCategory = async (req, res) => {
     res.status(500).json({ message: "Failed to delete category", error: err.message });
   }
 };
+const getCategoriesWithSubcategories = async (req, res, next) => {
+  try {
+    const categories = await Category.find();
+    const subcategories = await Subcategory.find();
 
+    const categoriesWithSubs = categories.map(category => {
+      const subs = subcategories.filter(sub => sub.parent.toString() === category._id.toString());
+      return {
+        ...category.toObject(),
+        subcategories: subs
+      };
+    });
+
+    res.status(200).json(categoriesWithSubs);
+  } catch (err) {
+    next(err);
+  }
+};
 module.exports = {
   createCategory,
   getCategories,
   updateCategory,
   deleteCategory,
+  getCategoriesWithSubcategories,
 };

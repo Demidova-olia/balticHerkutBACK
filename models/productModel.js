@@ -40,15 +40,24 @@ const productSchema = new mongoose.Schema({
     type: [String], 
     default: ['../public/product.jpg'],
   },
-  createdAt: {
-    type: Date,
-    default: Date.now, 
+  brand: {
+    type: String,
+    trim: true,
   },
-  updatedAt: {
-    type: Date,
-    default: Date.now, 
+  isFeatured: {
+    type: Boolean,
+    default: false,
   },
-},  { timestamps: true });
+  discount: {
+    type: Number,
+    min: 0,
+    max: 100,
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
+}, { timestamps: true });
 
 const Product = mongoose.model('Product', productSchema);
 

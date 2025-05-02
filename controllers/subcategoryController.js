@@ -1,10 +1,6 @@
 const Subcategory = require("../models/subcategoryModel");
 
 const createSubcategory = async (req, res) => {
-  if (req.user.role !== 'ADMIN') {
-    return res.status(403).json({ message: 'Access denied' });
-  }
-
   try {
     const subcategory = new Subcategory(req.body);
     await subcategory.save();
@@ -24,10 +20,6 @@ const getSubcategories = async (req, res) => {
 };
 
 const updateSubcategory = async (req, res) => {
-  if (req.user.role !== 'ADMIN') {
-    return res.status(403).json({ message: 'Access denied' });
-  }
-
   try {
     const subcategory = await Subcategory.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!subcategory) return res.status(404).json({ message: "Subcategory not found" });
@@ -38,10 +30,6 @@ const updateSubcategory = async (req, res) => {
 };
 
 const deleteSubcategory = async (req, res) => {
-  if (req.user.role !== 'ADMIN') {
-    return res.status(403).json({ message: 'Access denied' });
-  }
-
   try {
     const subcategory = await Subcategory.findByIdAndDelete(req.params.id);
     if (!subcategory) return res.status(404).json({ message: "Subcategory not found" });

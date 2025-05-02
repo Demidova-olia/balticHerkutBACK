@@ -19,6 +19,7 @@ router.get("/search", searchProducts);
 router.get("/", getProducts);
 router.get("/category/:categoryName", getProductsByCategory);
 router.get("/:id", getProductById);
+
 router.post(
   "/",
   authMiddleware,
@@ -26,6 +27,7 @@ router.post(
   upload.array("images", 5),
   createProduct
 );
+
 router.put(
   "/:id",
   authMiddleware,
@@ -33,6 +35,7 @@ router.put(
   upload.array("images", 5),
   updateProduct
 );
+
 router.delete(
   "/:id",
   authMiddleware,
@@ -41,3 +44,4 @@ router.delete(
 );
 
 module.exports = router;
+

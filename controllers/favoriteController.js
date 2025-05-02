@@ -1,9 +1,14 @@
+const mongoose = require("mongoose");
 const Favorite = require("../models/favoriteModel");
 const Product = require("../models/productModel");
 
 const addFavorite = async (req, res) => {
   const userId = req.user._id;
   const { productId } = req.body;
+
+  if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
+    return res.status(400).json({ message: "Invalid product ID" });
+  }
 
   try {
     const existing = await Favorite.findOne({ user: userId, product: productId });
@@ -24,6 +29,10 @@ const removeFavorite = async (req, res) => {
   const userId = req.user._id;
   const { productId } = req.params;
 
+  if (!mongoose.Types.ObjectId.isValid(productId)) {
+    return res.status(400).json({ message: "Invalid product ID" });
+  }
+
   try {
     const removed = await Favorite.findOneAndDelete({ user: userId, product: productId });
     if (!removed) return res.status(404).json({ message: "Favorite not found" });
@@ -39,7 +48,7 @@ const getFavorites = async (req, res) => {
 
   try {
     const favorites = await Favorite.find({ user: userId }).populate("product");
-    res.json(favorites);
+    res.json(favorites.map((fav) => fav.product));
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch favorites", error: err.message });
   }
