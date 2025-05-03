@@ -18,53 +18,61 @@ const uploadToCloudinary = (fileBuffer, filename) => {
   });
 };
 
+// Создание нового продукта
 const createProduct = async (req, res) => {
-    try {
-      const { name, description, price, category, subcategory, stock } = req.body;
-  
-      const existingCategory = await Category.findById(category);
-      if (!existingCategory) {
-        return res.status(400).json({ message: "Category does not exist" });
-      }
-  
-      let subcategoryId = null;
-      if (subcategory) {
-        const existingSubcategory = await Subcategory.findOne({
-          name: subcategory,
-          parent: category,
-        });
-  
-        if (!existingSubcategory) {
-          return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
-        }
-  
-        subcategoryId = existingSubcategory._id;
-      }
-  
-      let imageUrls = [];
-      if (req.files && req.files.length > 0) {
-        imageUrls = req.files.map(file => file.path);
-      } else {
-        imageUrls = ["http://localhost:3000/images/product.jpg"];
-      }
-  
-      const product = new Product({
-        name,
-        description,
-        price,
-        category,
-        subcategory: subcategoryId,
-        stock,
-        images: imageUrls,
-      });
-  
-      await product.save();
-      res.status(201).json(product);
-    } catch (error) {
-      console.error("Error creating product:", error);
-      res.status(500).json({ message: "Failed to create product" });
+  try {
+    const { name, description, price, category, subcategory, stock } = req.body;
+
+    // Проверка существования категории
+    const existingCategory = await Category.findById(category);
+    if (!existingCategory) {
+      return res.status(400).json({ message: "Category does not exist" });
     }
-  };
+
+    let subcategoryId = null;
+    if (subcategory) {
+      const existingSubcategory = await Subcategory.findOne({
+        name: subcategory,
+        parent: category,
+      });
+
+      if (!existingSubcategory) {
+        return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
+      }
+
+      subcategoryId = existingSubcategory._id;
+    }
+
+    // Загрузка изображений на Cloudinary
+    let imageUrls = [];
+
+    if (req.files && req.files.length > 0) {
+      imageUrls = await Promise.all(
+        req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
+      );
+    } else {
+      imageUrls = ["http://localhost:3000/images/product.jpg"];
+    }
+
+    // Создание нового продукта
+    const product = new Product({
+      name,
+      description,
+      price,
+      category,
+      subcategory: subcategoryId,
+      stock,
+      images: imageUrls,
+    });
+
+    await product.save();
+    res.status(201).json(product);
+  } catch (error) {
+    console.error("Error creating product:", error);
+    res.status(500).json({ message: "Failed to create product" });
+  }
+};
+
   
 
 const getProducts = async (req, res) => {
@@ -126,63 +134,68 @@ const getProductById = async (req, res) => {
 };
 
 const updateProduct = async (req, res) => {
-    try {
-      const { id } = req.params;
-  
-      const product = await Product.findById(id);
-      if (!product) {
-        return res.status(404).json({ message: "Product not found" });
-      }
-  
-      if (req.user?.role !== "ADMIN") {
-        return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
-      }
-  
-      const { name, price, category, subcategory, image } = req.body;
-      const updates = {};
-  
-      if (req.files && req.files.length > 0) {
-        updates.images = req.files.map(file => file.path);
-      }
-  
-      if (price !== undefined && price <= 0) {
-        return res.status(400).json({ message: "Price must be greater than 0" });
-      }
-  
-      if (name !== undefined) updates.name = name;
-      if (price !== undefined) updates.price = price;
-      if (category !== undefined) {
-        const existingCategory = await Category.findById(category);
-        if (!existingCategory) {
-          return res.status(400).json({ message: "Category does not exist" });
-        }
-        updates.category = category;
-      }
-  
-      if (subcategory !== undefined) {
-        const existingSubcategory = await Subcategory.findOne({
-          _id: subcategory,
-          parent: updates.category || product.category,
-        });
-  
-        if (!existingSubcategory) {
-          return res.status(400).json({ message: "Subcategory not found or does not belong to this category" });
-        }
-  
-        updates.subcategory = subcategory;
-      }
-  
-      if (image !== undefined) updates.image = image;
-  
-      const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
-        new: true,
-      }).populate("category").populate("subcategory");
-  
-      res.send(updatedProduct);
-    } catch (error) {
-      res.status(500).send(error);
+  try {
+    const { id } = req.params;
+
+    const product = await Product.findById(id);
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
     }
-  };
+
+    if (req.user?.role !== "ADMIN") {
+      return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
+    }
+
+    const { name, price, category, subcategory, stock } = req.body;
+    const updates = {};
+
+    if (req.files && req.files.length > 0) {
+      updates.images = await Promise.all(
+        req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
+      );
+    }
+
+    // Проверка цены
+    if (price !== undefined && price <= 0) {
+      return res.status(400).json({ message: "Price must be greater than 0" });
+    }
+
+    // Обновление полей
+    if (name !== undefined) updates.name = name;
+    if (price !== undefined) updates.price = price;
+    if (stock !== undefined) updates.stock = stock;
+
+    if (category !== undefined) {
+      const existingCategory = await Category.findById(category);
+      if (!existingCategory) {
+        return res.status(400).json({ message: "Category does not exist" });
+      }
+      updates.category = category;
+    }
+
+    if (subcategory !== undefined) {
+      const existingSubcategory = await Subcategory.findOne({
+        _id: subcategory,
+        parent: updates.category || product.category,
+      });
+
+      if (!existingSubcategory) {
+        return res.status(400).json({ message: "Subcategory not found or does not belong to this category" });
+      }
+
+      updates.subcategory = subcategory;
+    }
+
+    const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
+      new: true,
+    }).populate("category").populate("subcategory");
+
+    res.send(updatedProduct);
+  } catch (error) {
+    console.error("Error updating product:", error);
+    res.status(500).send({ message: "Failed to update product" });
+  }
+};
   
 
 const searchProducts = async (req, res) => {

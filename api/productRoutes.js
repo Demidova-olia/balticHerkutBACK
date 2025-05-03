@@ -11,7 +11,7 @@ const {
 const rolesMiddleware = require("../middlewares/rolesMiddleware");
 const authMiddleware = require("../middlewares/authMiddleware");
 const ROLES = require("../config/roles");
-const upload = require("../middlewares/cloudinary");
+const upload = require("../middlewares/multer");
 
 const router = express.Router();
 
