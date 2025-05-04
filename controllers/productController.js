@@ -1,20 +1,28 @@
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
 const Subcategory = require("../models/subcategoryModel");
-const cloudinary = require("cloudinary").v2;
+const cloudinary = require("../middlewares/cloudinary");
+const streamifier = require("streamifier");
 
+// Загрузка файла в Cloudinary
 const uploadToCloudinary = (fileBuffer, filename) => {
   return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_stream(
+    const stream = cloudinary.uploader.upload_stream(
       {
         folder: "products",
-        public_id: filename,
+        public_id: filename.split(".")[0],
+        resource_type: "image",
       },
       (error, result) => {
-        if (error) return reject(error);
+        if (error) {
+          console.error("Cloudinary upload error:", error);  // Логируем ошибку
+          return reject(error);
+        }
         resolve(result.secure_url);
       }
-    ).end(fileBuffer);
+    );
+
+    streamifier.createReadStream(fileBuffer).pipe(stream);
   });
 };
 
@@ -23,12 +31,13 @@ const createProduct = async (req, res) => {
   try {
     const { name, description, price, category, subcategory, stock } = req.body;
 
-    // Проверка существования категории
+    // Проверяем существование категории
     const existingCategory = await Category.findById(category);
     if (!existingCategory) {
       return res.status(400).json({ message: "Category does not exist" });
     }
 
+    // Проверяем существование подкатегории, если она указана
     let subcategoryId = null;
     if (subcategory) {
       const existingSubcategory = await Subcategory.findOne({
@@ -43,9 +52,8 @@ const createProduct = async (req, res) => {
       subcategoryId = existingSubcategory._id;
     }
 
-    // Загрузка изображений на Cloudinary
+    // Загружаем изображения в Cloudinary
     let imageUrls = [];
-
     if (req.files && req.files.length > 0) {
       imageUrls = await Promise.all(
         req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
@@ -54,7 +62,7 @@ const createProduct = async (req, res) => {
       imageUrls = ["http://localhost:3000/images/product.jpg"];
     }
 
-    // Создание нового продукта
+    // Создаем продукт
     const product = new Product({
       name,
       description,
@@ -65,6 +73,7 @@ const createProduct = async (req, res) => {
       images: imageUrls,
     });
 
+    // Сохраняем в базе данных
     await product.save();
     res.status(201).json(product);
   } catch (error) {
@@ -73,14 +82,13 @@ const createProduct = async (req, res) => {
   }
 };
 
-  
-
+// Получение всех продуктов с пагинацией
 const getProducts = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
     const skip = (page - 1) * limit;
+
     const totalProducts = await Product.countDocuments();
     const products = await Product.find()
       .populate("category")
@@ -96,6 +104,7 @@ const getProducts = async (req, res) => {
   }
 };
 
+// Получение продуктов по категории
 const getProductsByCategory = async (req, res) => {
   try {
     const categoryName = req.params.categoryName;
@@ -116,6 +125,7 @@ const getProductsByCategory = async (req, res) => {
   }
 };
 
+// Получение одного продукта по ID
 const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -133,10 +143,10 @@ const getProductById = async (req, res) => {
   }
 };
 
+// Обновление продукта
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-
     const product = await Product.findById(id);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
@@ -149,18 +159,17 @@ const updateProduct = async (req, res) => {
     const { name, price, category, subcategory, stock } = req.body;
     const updates = {};
 
+    // Обновление изображений
     if (req.files && req.files.length > 0) {
       updates.images = await Promise.all(
         req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
       );
     }
 
-    // Проверка цены
     if (price !== undefined && price <= 0) {
       return res.status(400).json({ message: "Price must be greater than 0" });
     }
 
-    // Обновление полей
     if (name !== undefined) updates.name = name;
     if (price !== undefined) updates.price = price;
     if (stock !== undefined) updates.stock = stock;
@@ -174,9 +183,11 @@ const updateProduct = async (req, res) => {
     }
 
     if (subcategory !== undefined) {
+      const parentCategory = updates.category || product.category;
+
       const existingSubcategory = await Subcategory.findOne({
         _id: subcategory,
-        parent: updates.category || product.category,
+        parent: parentCategory,
       });
 
       if (!existingSubcategory) {
@@ -196,8 +207,8 @@ const updateProduct = async (req, res) => {
     res.status(500).send({ message: "Failed to update product" });
   }
 };
-  
 
+// Поиск продуктов
 const searchProducts = async (req, res) => {
   try {
     const { q } = req.query;
@@ -222,6 +233,7 @@ const searchProducts = async (req, res) => {
   }
 };
 
+// Удаление продукта
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
