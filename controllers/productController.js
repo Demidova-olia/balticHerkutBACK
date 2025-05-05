@@ -4,7 +4,6 @@ const Subcategory = require("../models/subcategoryModel");
 const cloudinary = require("../middlewares/cloudinary");
 const streamifier = require("streamifier");
 
-// Загрузка файла в Cloudinary
 const uploadToCloudinary = (fileBuffer, filename) => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -15,33 +14,33 @@ const uploadToCloudinary = (fileBuffer, filename) => {
       },
       (error, result) => {
         if (error) {
-          console.error("Cloudinary upload error:", error);  // Логируем ошибку
           return reject(error);
         }
-        resolve(result.secure_url);
+        resolve({
+          url: result.secure_url,
+          public_id: result.public_id,
+        });
       }
     );
-
     streamifier.createReadStream(fileBuffer).pipe(stream);
   });
 };
 
-// Создание нового продукта
+
+
 const createProduct = async (req, res) => {
   try {
     const { name, description, price, category, subcategory, stock } = req.body;
 
-    // Проверяем существование категории
     const existingCategory = await Category.findById(category);
     if (!existingCategory) {
       return res.status(400).json({ message: "Category does not exist" });
     }
 
-    // Проверяем существование подкатегории, если она указана
     let subcategoryId = null;
     if (subcategory) {
       const existingSubcategory = await Subcategory.findOne({
-        name: subcategory,
+        _id: subcategory,
         parent: category,
       });
 
@@ -52,7 +51,6 @@ const createProduct = async (req, res) => {
       subcategoryId = existingSubcategory._id;
     }
 
-    // Загружаем изображения в Cloudinary
     let imageUrls = [];
     if (req.files && req.files.length > 0) {
       imageUrls = await Promise.all(
@@ -62,7 +60,6 @@ const createProduct = async (req, res) => {
       imageUrls = ["http://localhost:3000/images/product.jpg"];
     }
 
-    // Создаем продукт
     const product = new Product({
       name,
       description,
@@ -73,59 +70,78 @@ const createProduct = async (req, res) => {
       images: imageUrls,
     });
 
-    // Сохраняем в базе данных
     await product.save();
     res.status(201).json(product);
   } catch (error) {
-    console.error("Error creating product:", error);
+    console.error("Error creating product:", error.message, error.stack);
     res.status(500).json({ message: "Failed to create product" });
   }
 };
 
-// Получение всех продуктов с пагинацией
 const getProducts = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
+    const { search, category, subcategory, page = 1, limit = 10 } = req.query;
 
-    const totalProducts = await Product.countDocuments();
-    const products = await Product.find()
+    const query = {};
+
+    if (search) {
+      const regex = new RegExp(search, "i");
+      query.$or = [{ name: regex }, { description: regex }];
+    }
+    if (category) {
+      query.category = category;
+    }
+
+    if (subcategory) {
+      query.subcategory = subcategory;
+    }
+
+    const skip = (page - 1) * limit;
+    const totalProducts = await Product.countDocuments(query);
+
+    const products = await Product.find(query)
       .populate("category")
       .populate("subcategory")
       .skip(skip)
-      .limit(limit);
+      .limit(parseInt(limit));
 
     const totalPages = Math.ceil(totalProducts / limit);
 
-    res.send({ products, totalPages, totalProducts });
+    res.status(200).json({ products, totalPages, totalProducts });
   } catch (error) {
-    res.status(500).send(error);
-  }
-};
-
-// Получение продуктов по категории
-const getProductsByCategory = async (req, res) => {
-  try {
-    const categoryName = req.params.categoryName;
-    const category = await Category.findOne({ name: categoryName });
-
-    if (!category) {
-      return res.status(404).json({ message: "Category not found" });
-    }
-
-    const products = await Product.find({ category: category._id })
-      .populate("category")
-      .populate("subcategory");
-
-    res.json(products);
-  } catch (err) {
-    console.error(err);
+    console.error("Error in getProducts:", error);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// Получение одного продукта по ID
+
+const getProductsByCategory = async (req, res) => {
+  const { categoryId } = req.params;
+  
+  try {
+    const products = await Product.find({ category: categoryId });
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+const getProductsByCategoryAndSubcategory = async (req, res) => {
+  const { categoryId, subcategoryId } = req.params;
+
+  try {
+    const products = await Product.find({
+      category: categoryId,
+      subcategory: subcategoryId
+    }).exec();
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
+
 const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -143,24 +159,41 @@ const getProductById = async (req, res) => {
   }
 };
 
-// Обновление продукта
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+
     const product = await Product.findById(id);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    if (req.user?.role !== "ADMIN") {
+    if (!req.user || req.user.role !== "ADMIN") {
       return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
     }
 
     const { name, price, category, subcategory, stock } = req.body;
     const updates = {};
 
-    // Обновление изображений
     if (req.files && req.files.length > 0) {
+      // Удаляем старые изображения
+      if (product.images && product.images.length > 0) {
+        for (const image of product.images) {
+          try {
+            if (image.public_id) {
+              await cloudinary.uploader.destroy(image.public_id);
+            }
+          } catch (error) {
+            console.error(`Failed to delete image: ${image.public_id}`, error);
+          }
+        }
+      }
+
+      // Загружаем новые изображения
       updates.images = await Promise.all(
         req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
       );
@@ -174,7 +207,10 @@ const updateProduct = async (req, res) => {
     if (price !== undefined) updates.price = price;
     if (stock !== undefined) updates.stock = stock;
 
-    if (category !== undefined) {
+    if (category) {
+      if (!mongoose.Types.ObjectId.isValid(category)) {
+        return res.status(400).json({ message: "Invalid category ID" });
+      }
       const existingCategory = await Category.findById(category);
       if (!existingCategory) {
         return res.status(400).json({ message: "Category does not exist" });
@@ -182,18 +218,18 @@ const updateProduct = async (req, res) => {
       updates.category = category;
     }
 
-    if (subcategory !== undefined) {
+    if (subcategory) {
+      if (!mongoose.Types.ObjectId.isValid(subcategory)) {
+        return res.status(400).json({ message: "Invalid subcategory ID" });
+      }
       const parentCategory = updates.category || product.category;
-
       const existingSubcategory = await Subcategory.findOne({
         _id: subcategory,
         parent: parentCategory,
       });
-
       if (!existingSubcategory) {
-        return res.status(400).json({ message: "Subcategory not found or does not belong to this category" });
+        return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
       }
-
       updates.subcategory = subcategory;
     }
 
@@ -201,14 +237,14 @@ const updateProduct = async (req, res) => {
       new: true,
     }).populate("category").populate("subcategory");
 
-    res.send(updatedProduct);
+    res.status(200).json(updatedProduct);
   } catch (error) {
     console.error("Error updating product:", error);
-    res.status(500).send({ message: "Failed to update product" });
+    res.status(500).json({ message: "Failed to update product" });
   }
 };
 
-// Поиск продуктов
+
 const searchProducts = async (req, res) => {
   try {
     const { q } = req.query;
@@ -233,7 +269,6 @@ const searchProducts = async (req, res) => {
   }
 };
 
-// Удаление продукта
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
@@ -255,6 +290,7 @@ const deleteProduct = async (req, res) => {
 module.exports = {
   getProducts,
   getProductsByCategory,
+  getProductsByCategoryAndSubcategory,
   getProductById,
   createProduct,
   updateProduct,

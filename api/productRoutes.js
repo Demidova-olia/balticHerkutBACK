@@ -6,6 +6,7 @@ const {
   updateProduct,
   deleteProduct,
   getProductsByCategory,
+  getProductsByCategoryAndSubcategory,
   searchProducts,
 } = require("../controllers/productController");
 const rolesMiddleware = require("../middlewares/rolesMiddleware");
@@ -16,9 +17,13 @@ const upload = require("../middlewares/multer");
 const router = express.Router();
 
 router.get("/search", searchProducts);
-router.get("/", getProducts);
-router.get("/category/:categoryName", getProductsByCategory);
 router.get("/:id", getProductById);
+router.get('/:categoryId/:subcategoryId', getProductsByCategoryAndSubcategory);
+router.get("/:categoryId", getProductsByCategory);
+router.get("/", getProducts);
+
+
+
 
 router.post(
   "/",
