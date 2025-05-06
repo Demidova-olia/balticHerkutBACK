@@ -11,12 +11,12 @@ const {
 
 router.get('/:id/reviews', getProductReviews);
 
-router.get('/review/:reviewId', getOneReview);
+router.get('/reviews/:reviewId', getOneReview);
 
 router.post('/:id/reviews', authMiddleware, createReview);
 
-router.put('/review/:reviewId', authMiddleware, updateReview);
+router.put('/reviews/:reviewId', authMiddleware, updateReview);
 
-router.delete('/review/:reviewId', authMiddleware, deleteReview);
+router.delete('/reviews/:reviewId', authMiddleware, deleteReview);
 
 module.exports = router;
