@@ -180,7 +180,6 @@ const updateProduct = async (req, res) => {
     const updates = {};
 
     if (req.files && req.files.length > 0) {
-      // Удаляем старые изображения
       if (product.images && product.images.length > 0) {
         for (const image of product.images) {
           try {
@@ -193,7 +192,6 @@ const updateProduct = async (req, res) => {
         }
       }
 
-      // Загружаем новые изображения
       updates.images = await Promise.all(
         req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
       );

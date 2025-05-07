@@ -5,19 +5,29 @@ const Product = require("../models/productModel");
 const addFavorite = async (req, res) => {
   const userId = req.user._id;
   const { productId } = req.body;
+  console.log("User ID:", userId);
+  console.log("Product ID:", productId);
 
   if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
+    console.log("Invalid Product ID");
     return res.status(400).json({ message: "Invalid product ID" });
   }
 
   try {
     const product = await Product.findById(productId);
+    console.log("Product not found");
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
+    if (!product.isActive) {
+      console.log("Product is not active");
+      return res.status(400).json({ message: "Product is not active" });
+    }
+
     const existing = await Favorite.findOne({ user: userId, product: productId });
     if (existing) {
+      console.log("Product already in favorites");
       return res.status(400).json({ message: "Product already in favorites" });
     }
 
@@ -28,7 +38,7 @@ const addFavorite = async (req, res) => {
     res.status(201).json(populatedFavorite.product);
 
   } catch (err) {
-    console.error(err);
+    console.error("Error in adding to favorites:", err);
     res.status(500).json({ message: "Failed to add to favorites", error: err.message });
   }
 };
@@ -43,9 +53,12 @@ const removeFavorite = async (req, res) => {
 
   try {
     const removed = await Favorite.findOneAndDelete({ user: userId, product: productId });
-    if (!removed) return res.status(404).json({ message: "Favorite not found or already removed" });
+    if (!removed) {
+      return res.status(404).json({ message: "Favorite not found or already removed" });
+    }
 
     res.json({ message: "Removed from favorites" });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to remove favorite", error: err.message });
