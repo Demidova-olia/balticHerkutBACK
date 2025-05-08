@@ -143,6 +143,41 @@ const getProfile = async (req, res) => {
   }
 };
 
+const updateProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { username, email, phoneNumber, profilePicture, address } = req.body;
+
+    const updates = {
+      ...(username && { username }),
+      ...(email && { email }),
+      ...(phoneNumber && { phoneNumber }),
+      ...(profilePicture && { profilePicture }),
+      ...(address && { address }),
+    };
+
+    if ("role" in req.body) {
+      delete req.body.role;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(userId, updates, {
+      new: true,
+      runValidators: true,
+    }).select("-password");
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.status(200).json({
+      message: "Profile updated successfully",
+      user: updatedUser,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update profile", error });
+  }
+};
+
 const getMyFavorites = async (req, res) => {
   try {
     const favorites = await Favorite.find({ user: req.user._id }).populate("product");
@@ -170,4 +205,5 @@ module.exports = {
   getProfile,
   getMyFavorites,
   getMyReviews,
+  updateProfile,
 };

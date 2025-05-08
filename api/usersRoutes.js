@@ -6,6 +6,7 @@ const {
   deleteUser,
   getMyOrders,
   getProfile,
+  updateProfile,
   getMyFavorites,
   getMyReviews,
 } = require("../controllers/userController");
@@ -17,11 +18,14 @@ const router = express.Router();
 
 router.post("/register", register);
 router.post("/login", login);
-router.get("/", authMiddleware, rolesMiddleware(ROLES.ADMIN), getUsers);
-router.delete("/:id", authMiddleware, rolesMiddleware(ROLES.ADMIN), deleteUser);
+
 router.get("/orders", authMiddleware, getMyOrders);
 router.get('/profile', authMiddleware, getProfile);
+router.put("/profile", authMiddleware, updateProfile);
 router.get("/favorites", authMiddleware, getMyFavorites);
 router.get("/reviews", authMiddleware, getMyReviews);
+
+router.get("/", authMiddleware, rolesMiddleware(ROLES.ADMIN), getUsers);
+router.delete("/:id", authMiddleware, rolesMiddleware(ROLES.ADMIN), deleteUser);
 
 module.exports = router;
