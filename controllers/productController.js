@@ -3,17 +3,21 @@ const Category = require("../models/categoryModel");
 const Subcategory = require("../models/subcategoryModel");
 const cloudinary = require("../middlewares/cloudinary");
 const streamifier = require("streamifier");
+const path = require("path");
 
 const uploadToCloudinary = (fileBuffer, filename) => {
   return new Promise((resolve, reject) => {
+    const filenameWithoutExt = path.basename(filename, path.extname(filename));
+
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: "products",
-        public_id: filename.split(".")[0],
+        public_id: filenameWithoutExt,
         resource_type: "image",
       },
       (error, result) => {
         if (error) {
+          console.error("Cloudinary upload error:", error); // Log error here
           return reject(error);
         }
         resolve({
@@ -22,9 +26,11 @@ const uploadToCloudinary = (fileBuffer, filename) => {
         });
       }
     );
+
     streamifier.createReadStream(fileBuffer).pipe(stream);
   });
 };
+
 
 
 
