@@ -169,7 +169,7 @@ const getProductById = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, price, stock, category, subcategory } = req.body;
+    const { name, price, stock, category, subcategory, removeAllImages } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid product ID" });
@@ -181,15 +181,28 @@ const updateProduct = async (req, res) => {
     const updates = {};
 
     if (name) updates.name = name;
+
     if (price !== undefined) {
-      if (price <= 0) return res.status(400).json({ message: "Price must be positive" });
-      updates.price = price;
+      const parsedPrice = parseFloat(price);
+      if (isNaN(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).json({ message: "Price must be a positive number" });
+      }
+      updates.price = parsedPrice;
     }
-    if (stock !== undefined) updates.stock = stock;
+
+    if (stock !== undefined) {
+      const parsedStock = parseInt(stock);
+      if (isNaN(parsedStock) || parsedStock < 0) {
+        return res.status(400).json({ message: "Stock must be a non-negative integer" });
+      }
+      updates.stock = parsedStock;
+    }
 
     if (category) {
       const categoryDoc = await Category.findById(category);
-      if (!categoryDoc) return res.status(400).json({ message: "Invalid category" });
+      if (!categoryDoc) {
+        return res.status(400).json({ message: "Invalid category" });
+      }
       updates.category = category;
     }
 
@@ -198,31 +211,42 @@ const updateProduct = async (req, res) => {
         _id: subcategory,
         parent: updates.category || product.category,
       });
-      if (!subcat) return res.status(400).json({ message: "Invalid subcategory" });
+      if (!subcat) {
+        return res.status(400).json({ message: "Invalid subcategory" });
+      }
       updates.subcategory = subcategory;
     }
 
-    if (req.files?.length) {
+    // 🧹 Очистка всех изображений по запросу
+    if (removeAllImages === "true") {
       for (const img of product.images) {
-        await cloudinary.uploader.destroy(img.public_id);
+        if (img.public_id) {
+          await cloudinary.uploader.destroy(img.public_id);
+        }
       }
-
-      updates.images = await Promise.all(
-        req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
-      );
+      updates.images = [];
+    } else {
+      // ➕ Добавление новых изображений
+      if (req.files?.length) {
+        const newImages = await Promise.all(
+          req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
+        );
+        updates.images = [...product.images, ...newImages];
+      }
     }
 
-    const updated = await Product.findByIdAndUpdate(id, updates, {
+    const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
       new: true,
       runValidators: true,
     });
 
-    res.status(200).json(updated);
+    res.status(200).json(updatedProduct);
   } catch (err) {
-    console.error(err);
+    console.error("Error in updateProduct:", err);
     res.status(500).json({ message: "Failed to update product" });
   }
 };
+
 
 const searchProducts = async (req, res) => {
   try {

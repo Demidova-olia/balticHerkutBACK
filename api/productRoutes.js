@@ -18,12 +18,14 @@ const upload = require("../middlewares/multer");
 
 const router = express.Router();
 
+// 🔍 Фикс: сначала специфические маршруты
 router.get("/search", searchProducts);
-router.get("/:id", getProductById);
 router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
 router.get("/:categoryId", getProductsByCategory);
+router.get("/:id", getProductById); // ⬅ перемещено ниже
 router.get("/", getProducts);
 
+// 🛠 Защищённые маршруты
 router.post(
   "/",
   authMiddleware,
@@ -51,4 +53,3 @@ router.delete("/:productId/images/:publicId", deleteProductImage);
 router.put("/:productId/images/:publicId", upload.single("image"), updateProductImage);
 
 module.exports = router;
-
