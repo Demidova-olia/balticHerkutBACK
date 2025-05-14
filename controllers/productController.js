@@ -7,6 +7,10 @@ const path = require("path");
 
 const uploadToCloudinary = (fileBuffer, filename) => {
   return new Promise((resolve, reject) => {
+    if (!fileBuffer || !filename) {
+      return reject(new Error("Invalid file input for Cloudinary upload"));
+    }
+
     const filenameWithoutExt = path.basename(filename, path.extname(filename));
 
     const stream = cloudinary.uploader.upload_stream(
@@ -17,9 +21,13 @@ const uploadToCloudinary = (fileBuffer, filename) => {
       },
       (error, result) => {
         if (error) {
-          console.error("Cloudinary upload error:", error); // Log error here
+          console.error("❌ Cloudinary upload error:", error);
           return reject(error);
         }
+        if (!result || !result.secure_url || !result.public_id) {
+          return reject(new Error("Incomplete Cloudinary upload response"));
+        }
+
         resolve({
           url: result.secure_url,
           public_id: result.public_id,
@@ -27,9 +35,15 @@ const uploadToCloudinary = (fileBuffer, filename) => {
       }
     );
 
-    streamifier.createReadStream(fileBuffer).pipe(stream);
+    try {
+      streamifier.createReadStream(fileBuffer).pipe(stream);
+    } catch (err) {
+      console.error("❌ Error creating Cloudinary stream:", err);
+      reject(err);
+    }
   });
 };
+
 
 
 
@@ -178,6 +192,7 @@ const updateProduct = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
+    // Проверка прав доступа
     if (!req.user || req.user.role !== "ADMIN") {
       return res.status(403).json({ message: "Permission denied. Only ADMIN can update products" });
     }
@@ -185,6 +200,7 @@ const updateProduct = async (req, res) => {
     const { name, price, category, subcategory, stock } = req.body;
     const updates = {};
 
+    // 🔁 Удаление старых изображений и загрузка новых
     if (req.files && req.files.length > 0) {
       if (product.images && product.images.length > 0) {
         for (const image of product.images) {
@@ -198,18 +214,28 @@ const updateProduct = async (req, res) => {
         }
       }
 
-      updates.images = await Promise.all(
-        req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
-      );
+      try {
+        updates.images = await Promise.all(
+          req.files.map(file =>
+            uploadToCloudinary(file.buffer, file.originalname)
+          )
+        );
+      } catch (err) {
+        console.error("Cloudinary upload error:", err);
+        return res.status(500).json({ message: "Image upload failed" });
+      }
     }
 
-    if (price !== undefined && price <= 0) {
-      return res.status(400).json({ message: "Price must be greater than 0" });
+    // ✅ Валидации
+    if (price !== undefined) {
+      if (price <= 0) {
+        return res.status(400).json({ message: "Price must be greater than 0" });
+      }
+      updates.price = price;
     }
 
-    if (name !== undefined) updates.name = name;
-    if (price !== undefined) updates.price = price;
     if (stock !== undefined) updates.stock = stock;
+    if (name !== undefined) updates.name = name;
 
     if (category) {
       if (!mongoose.Types.ObjectId.isValid(category)) {
@@ -232,21 +258,27 @@ const updateProduct = async (req, res) => {
         parent: parentCategory,
       });
       if (!existingSubcategory) {
-        return res.status(400).json({ message: "Subcategory does not exist or does not belong to this category" });
+        return res.status(400).json({
+          message: "Subcategory does not exist or does not belong to this category",
+        });
       }
       updates.subcategory = subcategory;
     }
 
+    console.log("Updating product with data:", updates);
+
     const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
       new: true,
+      runValidators: true,
     }).populate("category").populate("subcategory");
 
     res.status(200).json(updatedProduct);
   } catch (error) {
-    console.error("Error updating product:", error);
+    console.error("Error updating product:", error.message, error.stack);
     res.status(500).json({ message: "Failed to update product" });
   }
 };
+
 
 
 const searchProducts = async (req, res) => {
