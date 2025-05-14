@@ -10,7 +10,7 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 
 const app = express();
-
+const uploadRoutes = require("./api/uploadRoutes")
 cloudinary.config({
     cloud_name: 'diw6ugcy3',
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -22,7 +22,7 @@ app.use(cors());
 app.use(express.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.use('/images', express.static(path.join(__dirname, 'public/images')));
+app.use("/api", uploadRoutes);
 
 const userAPIRoutes = require("./api/usersRoutes");
 const productsAPIRoutes = require("./api/productRoutes");
