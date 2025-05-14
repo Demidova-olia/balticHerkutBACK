@@ -4,6 +4,7 @@ const Subcategory = require("../models/subcategoryModel");
 const cloudinary = require("../middlewares/cloudinary");
 const streamifier = require("streamifier");
 const path = require("path");
+const mongoose = require("mongoose");
 
 const uploadToCloudinary = (fileBuffer, filename) => {
   return new Promise((resolve, reject) => {
