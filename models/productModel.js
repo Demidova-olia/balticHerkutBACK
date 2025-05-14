@@ -5,20 +5,20 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true,
-    minlength: 3, 
+    minlength: 3,
   },
   description: {
     type: String,
     required: true,
-    minlength: 10, 
+    minlength: 10,
   },
   price: {
     type: Number,
     required: true,
     min: 0,
   },
-  category: { 
-    type: mongoose.Schema.Types.ObjectId, 
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
     ref: 'Category',
     required: true
   },
@@ -30,15 +30,20 @@ const productSchema = new mongoose.Schema({
   stock: {
     type: Number,
     required: true,
-    min: 0, 
+    min: 0,
   },
   averageRating: {
     type: Number,
     default: 0,
   },
   images: {
-    type: [String], 
-    default: ['../public/product.jpg'],
+    type: [
+      {
+        url: { type: String, required: true },
+        public_id: { type: String, required: true }
+      }
+    ],
+    default: []
   },
   brand: {
     type: String,
@@ -62,3 +67,4 @@ const productSchema = new mongoose.Schema({
 const Product = mongoose.model('Product', productSchema);
 
 module.exports = Product;
+
