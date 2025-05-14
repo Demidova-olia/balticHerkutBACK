@@ -8,6 +8,8 @@ const {
   getProductsByCategory,
   getProductsByCategoryAndSubcategory,
   searchProducts,
+  deleteProductImage,
+  updateProductImage,
 } = require("../controllers/productController");
 const rolesMiddleware = require("../middlewares/rolesMiddleware");
 const authMiddleware = require("../middlewares/authMiddleware");
@@ -18,12 +20,9 @@ const router = express.Router();
 
 router.get("/search", searchProducts);
 router.get("/:id", getProductById);
-router.get('/:categoryId/:subcategoryId', getProductsByCategoryAndSubcategory);
+router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
 router.get("/:categoryId", getProductsByCategory);
 router.get("/", getProducts);
-
-
-
 
 router.post(
   "/",
@@ -47,6 +46,9 @@ router.delete(
   rolesMiddleware(ROLES.ADMIN),
   deleteProduct
 );
+
+router.delete("/:productId/images/:publicId", deleteProductImage);
+router.put("/:productId/images/:publicId", upload.single("image"), updateProductImage);
 
 module.exports = router;
 

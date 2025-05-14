@@ -1,9 +1,38 @@
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
 const Subcategory = require("../models/subcategoryModel");
-const cloudinary = require("../config/cloudinary");
-const uploadToCloudinary = require("../middlewares/uploadToCloudinary");
+const cloudinary = require("cloudinary").v2;
+const streamifier = require("streamifier");
+const path = require("path");
 const mongoose = require("mongoose");
+
+// Cloudinary конфигурация
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Функция загрузки в Cloudinary
+const uploadToCloudinary = (fileBuffer, filename) => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "products",
+        resource_type: "image",
+        public_id: filename.split(".")[0],
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve({
+          url: result.secure_url,
+          public_id: result.public_id,
+        });
+      }
+    );
+    streamifier.createReadStream(fileBuffer).pipe(stream);
+  });
+};
 
 const createProduct = async (req, res) => {
   try {
@@ -20,7 +49,10 @@ const createProduct = async (req, res) => {
 
     let subcategoryDoc = null;
     if (subcategory) {
-      subcategoryDoc = await Subcategory.findOne({ _id: subcategory, parent: category });
+      subcategoryDoc = await Subcategory.findOne({
+        _id: subcategory,
+        parent: category,
+      });
       if (!subcategoryDoc) {
         return res.status(400).json({ message: "Subcategory invalid or does not belong to category" });
       }
@@ -61,9 +93,13 @@ const getProducts = async (req, res) => {
       const regex = new RegExp(search, "i");
       query.$or = [{ name: regex }, { description: regex }];
     }
+    if (category) {
+      query.category = category;
+    }
 
-    if (category) query.category = category;
-    if (subcategory) query.subcategory = subcategory;
+    if (subcategory) {
+      query.subcategory = subcategory;
+    }
 
     const skip = (page - 1) * limit;
     const totalProducts = await Product.countDocuments(query);
@@ -82,6 +118,31 @@ const getProducts = async (req, res) => {
   } catch (error) {
     console.error("Error in getProducts:", error);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+const getProductsByCategory = async (req, res) => {
+  const { categoryId } = req.params;
+
+  try {
+    const products = await Product.find({ category: categoryId });
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+const getProductsByCategoryAndSubcategory = async (req, res) => {
+  const { categoryId, subcategoryId } = req.params;
+
+  try {
+    const products = await Product.find({
+      category: categoryId,
+      subcategory: subcategoryId,
+    }).exec();
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -133,7 +194,10 @@ const updateProduct = async (req, res) => {
     }
 
     if (subcategory) {
-      const subcat = await Subcategory.findOne({ _id: subcategory, parent: updates.category || product.category });
+      const subcat = await Subcategory.findOne({
+        _id: subcategory,
+        parent: updates.category || product.category,
+      });
       if (!subcat) return res.status(400).json({ message: "Invalid subcategory" });
       updates.subcategory = subcategory;
     }
@@ -160,6 +224,30 @@ const updateProduct = async (req, res) => {
   }
 };
 
+const searchProducts = async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || q.trim() === "") {
+      return res.status(400).json({ message: 'Query parameter "q" is required' });
+    }
+
+    const regex = new RegExp(q, "i");
+
+    const products = await Product.find({
+      $or: [{ name: regex }, { description: regex }],
+    })
+      .limit(30)
+      .populate("category")
+      .populate("subcategory");
+
+    res.status(200).json(products);
+  } catch (error) {
+    console.error("Search error:", error);
+    res.status(500).json({ message: "Server error during search" });
+  }
+};
+
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
@@ -169,7 +257,6 @@ const deleteProduct = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // Удаляем изображения из Cloudinary
     for (const image of product.images) {
       try {
         if (image.public_id && image.public_id !== "default_local_image") {
@@ -181,14 +268,12 @@ const deleteProduct = async (req, res) => {
     }
 
     const deletedProduct = await Product.findByIdAndDelete(id);
-
     res.send({ message: "Product was removed", data: deletedProduct });
   } catch (error) {
     res.status(500).send(error);
   }
 };
 
-// ✅ DELETE ONE IMAGE
 const deleteProductImage = async (req, res) => {
   const { productId, publicId } = req.params;
   try {
@@ -208,7 +293,6 @@ const deleteProductImage = async (req, res) => {
   }
 };
 
-// ✅ REPLACE ONE IMAGE
 const updateProductImage = async (req, res) => {
   const { productId, publicId } = req.params;
 
@@ -222,10 +306,8 @@ const updateProductImage = async (req, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ message: "No image uploaded" });
 
-    // Удаляем старую картинку
     await cloudinary.uploader.destroy(publicId);
 
-    // Загружаем новую
     const newImage = await uploadToCloudinary(file.buffer, file.originalname);
     product.images[imageIndex] = newImage;
 
@@ -238,9 +320,12 @@ const updateProductImage = async (req, res) => {
 
 module.exports = {
   getProducts,
+  getProductsByCategory,
+  getProductsByCategoryAndSubcategory,
   getProductById,
   createProduct,
   updateProduct,
+  searchProducts,
   deleteProduct,
   deleteProductImage,
   updateProductImage,
