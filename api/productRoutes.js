@@ -18,14 +18,14 @@ const upload = require("../middlewares/multer");
 
 const router = express.Router();
 
-// 🔍 Фикс: сначала специфические маршруты
+// ❗ Специфичные маршруты сначала
 router.get("/search", searchProducts);
+router.get("/id/:id", getProductById); // 🔄 СТАВИМ ВЫШЕ
 router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
 router.get("/:categoryId", getProductsByCategory);
-router.get("/:id", getProductById); // ⬅ перемещено ниже
 router.get("/", getProducts);
 
-// 🛠 Защищённые маршруты
+// 🛡 Защищённые маршруты
 router.post(
   "/",
   authMiddleware,
