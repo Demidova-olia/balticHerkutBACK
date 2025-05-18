@@ -10,6 +10,7 @@ const { uploadToCloudinary } = require("../utils/uploadToCloudinary");
 
 const createProduct = async (req, res) => {
   try {
+    console.log("FILES:", req.files);
     const { name, description, price, category, subcategory, stock } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(category)) {
@@ -35,7 +36,11 @@ const createProduct = async (req, res) => {
     let images = [];
     if (req.files?.length) {
       images = await Promise.all(
-        req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
+        req.files.map(async (file) => {
+          const uploadResult = await uploadToCloudinary(file.buffer, file.originalname);
+          console.log("Upload result:", uploadResult);
+          return uploadResult;
+        })
       );
     }
 
