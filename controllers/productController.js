@@ -74,7 +74,7 @@ const createProduct = async (req, res) => {
     });
 
     await product.save();
-    res.status(201).json(product);
+    res.status(201).json({ message: "Product created", data: product });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to create product" });
@@ -112,7 +112,7 @@ const getProducts = async (req, res) => {
 
     const totalPages = Math.ceil(totalProducts / limit);
 
-    res.status(200).json({ products, totalPages, totalProducts });
+    res.status(200).json({ message: "Products fetched", data: { products, totalPages, totalProducts } });
   } catch (error) {
     console.error("Error in getProducts:", error);
     res.status(500).json({ message: "Server error" });
@@ -124,7 +124,7 @@ const getProductsByCategory = async (req, res) => {
 
   try {
     const products = await Product.find({ category: categoryId });
-    res.json(products);
+    res.json({ message: "Products by category", data: products });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -157,7 +157,7 @@ const getProductById = async (req, res) => {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    res.status(200).json(product);
+    res.status(200).json({ message: "Product fetched", data: product });
   } catch (error) {
     console.error("Error fetching product by ID:", error);
     res.status(500).json({ message: "Server error" });
@@ -248,7 +248,7 @@ const updateProduct = async (req, res) => {
       runValidators: true,
     });
 
-    res.status(200).json(updatedProduct);
+    res.status(200).json({ message: "Product updated", data: updatedProduct });
   } catch (err) {
     console.error("Error in updateProduct:", err);
     res.status(500).json({ message: "Failed to update product" });
@@ -274,7 +274,7 @@ const searchProducts = async (req, res) => {
       .populate("category")
       .populate("subcategory");
 
-    res.status(200).json(products);
+    res.status(200).json({ message: "Search completed", data: products });
   } catch (error) {
     console.error("Search error:", error);
     res.status(500).json({ message: "Server error during search" });
@@ -320,7 +320,7 @@ const deleteProductImage = async (req, res) => {
     product.images = product.images.filter(img => img.public_id !== publicId);
     await product.save();
 
-    res.status(200).json({ message: "Image deleted", images: product.images });
+    res.status(200).json({ message: "Image deleted", data: product.images });
   } catch (err) {
     res.status(500).json({ message: "Failed to delete image" });
   }
@@ -345,7 +345,7 @@ const updateProductImage = async (req, res) => {
     product.images[imageIndex] = newImage;
 
     await product.save();
-    res.status(200).json({ message: "Image updated", image: newImage });
+    res.status(200).json({ message: "Image updated", data: newImage });
   } catch (err) {
     res.status(500).json({ message: "Failed to update image" });
   }
