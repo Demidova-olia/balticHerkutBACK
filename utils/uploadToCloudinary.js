@@ -8,14 +8,14 @@ cloudinary.config({
 });
 
 /**
- * Загружает буфер изображения в Cloudinary.
- * @param {Buffer} buffer - Буфер файла (получен через multer memoryStorage).
- * @param {string} filename - Имя файла (используется как public_id).
+ * Uploads an image buffer to Cloudinary.
+ * @param {Buffer} buffer - File buffer (received via multer memoryStorage).
+ * @param {string} filename - File name (used as public_id).
  * @returns {Promise<{url: string, public_id: string}>}
  */
 const uploadToCloudinary = (buffer, filename) => {
   return new Promise((resolve, reject) => {
-    console.log("📦 Пытаюсь загрузить в Cloudinary файл:", filename);
+    console.log("📦 Attempting to upload file to Cloudinary:", filename);
 
     const uploadStream = cloudinary.uploader.upload_stream(
       {
@@ -29,7 +29,7 @@ const uploadToCloudinary = (buffer, filename) => {
           console.error("❌ Cloudinary upload error:", error);
           reject(error);
         } else {
-          console.log("✅ Успешно загружено в Cloudinary:", result.secure_url);
+          console.log("✅ Successfully uploaded to Cloudinary:", result.secure_url);
           resolve({
             url: result.secure_url,
             public_id: result.public_id,
@@ -38,9 +38,8 @@ const uploadToCloudinary = (buffer, filename) => {
       }
     );
 
-    // Если buffer пустой или не передан, это тоже надо ловить
     if (!buffer) {
-      console.error("❗ Пустой буфер, ничего не загружаю в Cloudinary.");
+      console.error("❗ Empty buffer, nothing to upload to Cloudinary.");
       reject(new Error("Buffer is empty or undefined"));
     } else {
       streamifier.createReadStream(buffer).pipe(uploadStream);
