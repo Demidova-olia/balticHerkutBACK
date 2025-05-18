@@ -6,14 +6,12 @@ const streamifier = require("streamifier");
 const path = require("path");
 const mongoose = require("mongoose");
 
-// Cloudinary конфигурация
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Функция загрузки в Cloudinary
 const uploadToCloudinary = (fileBuffer, filename) => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -169,7 +167,7 @@ const getProductById = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, price, stock, category, subcategory, removeAllImages } = req.body;
+    const { name, price, stock, category, subcategory, removeAllImages, existingImages } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid product ID" });
@@ -217,23 +215,33 @@ const updateProduct = async (req, res) => {
       updates.subcategory = subcategory;
     }
 
-    // 🧹 Очистка всех изображений по запросу
+    let finalImages = [];
+
     if (removeAllImages === "true") {
       for (const img of product.images) {
         if (img.public_id) {
           await cloudinary.uploader.destroy(img.public_id);
         }
       }
-      updates.images = [];
     } else {
-      // ➕ Добавление новых изображений
+      if (existingImages) {
+        try {
+          const parsed = JSON.parse(existingImages);
+          finalImages = parsed.filter(img => img.url && img.public_id);
+        } catch {
+          return res.status(400).json({ message: "Invalid existingImages format" });
+        }
+      }
+
       if (req.files?.length) {
         const newImages = await Promise.all(
           req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
         );
-        updates.images = [...product.images, ...newImages];
+        finalImages = [...finalImages, ...newImages];
       }
     }
+
+    updates.images = finalImages;
 
     const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
       new: true,
@@ -246,6 +254,7 @@ const updateProduct = async (req, res) => {
     res.status(500).json({ message: "Failed to update product" });
   }
 };
+
 
 
 const searchProducts = async (req, res) => {
