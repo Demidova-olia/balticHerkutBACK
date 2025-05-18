@@ -5,6 +5,7 @@ const cloudinary = require("cloudinary").v2;
 const streamifier = require("streamifier");
 const path = require("path");
 const mongoose = require("mongoose");
+const { uploadToCloudinary } = require("../utils/cloudinary");
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
