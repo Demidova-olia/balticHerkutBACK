@@ -18,8 +18,8 @@ const upload = require("../middlewares/multer");
 
 const router = express.Router();
 
-router.get("/search", searchProducts);
 router.get("/id/:id", getProductById);
+router.get("/search", searchProducts);
 router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
 router.get("/:categoryId", getProductsByCategory);
 router.get("/", getProducts);
