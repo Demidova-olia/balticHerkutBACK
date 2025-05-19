@@ -13,7 +13,7 @@ const uploadToCloudinary = (fileBuffer, filename) => {
       {
         folder: "products",
         resource_type: "image",
-        public_id: filename.split(".")[0], // Название файла без расширения
+        public_id: filename.split(".")[0],
       },
       (error, result) => {
         if (error) return reject(error);
