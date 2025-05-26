@@ -28,7 +28,7 @@ router.post(
   "/",
   authMiddleware,
   rolesMiddleware(ROLES.ADMIN),
-  upload.array("images", 5),
+  upload.array("images"),
   createProduct
 );
 
@@ -36,7 +36,6 @@ router.put(
   "/:id",
   authMiddleware,
   rolesMiddleware(ROLES.ADMIN),
-  upload.array("images", 5),
   updateProduct
 );
 
@@ -47,6 +46,7 @@ router.delete(
   deleteProduct
 );
 
+// только для загрузки картинки (Cloudinary)
 router.delete("/:productId/images/:publicId", deleteProductImage);
 router.put("/:productId/images/:publicId", upload.single("image"), updateProductImage);
 

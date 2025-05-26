@@ -10,7 +10,6 @@ const { uploadToCloudinary } = require("../utils/uploadToCloudinary");
 
 const createProduct = async (req, res) => {
   try {
-    console.log("FILES:", req.files);
     const { name, description, price, category, subcategory, stock } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(category)) {
@@ -33,16 +32,30 @@ const createProduct = async (req, res) => {
       }
     }
 
-    let images = [];
-    if (req.files?.length) {
-      images = await Promise.all(
-        req.files.map(async (file) => {
-          const uploadResult = await uploadToCloudinary(file.buffer, file.originalname);
-          console.log("Upload result:", uploadResult);
-          return uploadResult;
-        })
-      );
+   let images = [];
+if (req.files && req.files.length > 0) {
+  images = await Promise.all(
+    req.files.map(async (file) => {
+      const result = await uploadToCloudinary(file.buffer, file.originalname);
+      return {
+        url: result.secure_url,
+        public_id: result.public_id,
+      };
+    })
+  );
+}
+
+    if (!images.length && req.body.images) {
+      const bodyImages = req.body.images;
+
+      if (typeof bodyImages === 'string') {
+        images = [{ url: bodyImages }];
+      } else if (Array.isArray(bodyImages)) {
+        images = bodyImages.map((url) => ({ url }));
+      }
     }
+
+    console.log("Final images to save:", images);
 
     const product = new Product({
       name,
@@ -61,6 +74,8 @@ const createProduct = async (req, res) => {
     res.status(500).json({ message: "Failed to create product" });
   }
 };
+
+
 
 const getProducts = async (req, res) => {
   try {
