@@ -46,7 +46,6 @@ router.delete(
   deleteProduct
 );
 
-// только для загрузки картинки (Cloudinary)
 router.delete("/:productId/images/:publicId", deleteProductImage);
 router.put("/:productId/images/:publicId", upload.single("image"), updateProductImage);
 

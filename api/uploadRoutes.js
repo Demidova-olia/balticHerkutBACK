@@ -10,7 +10,7 @@ const upload = multer({ storage });
 router.post("/upload", upload.single("image"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "Файл не передан" });
+      return res.status(400).json({ error: "Fail not passed" });
     }
 
     const stream = cloudinary.uploader.upload_stream(
@@ -28,12 +28,11 @@ router.post("/upload", upload.single("image"), (req, res) => {
       }
     );
 
-    // pipe из буфера в cloudinary stream
     Readable.from(req.file.buffer).pipe(stream);
 
   } catch (err) {
-    console.error("Ошибка загрузки:", err);
-    res.status(500).json({ message: "Ошибка загрузки" });
+    console.error("Error downloading:", err);
+    res.status(500).json({ message: "Error downloading" });
   }
 });
 
