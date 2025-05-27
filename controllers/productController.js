@@ -38,7 +38,7 @@ if (req.files && req.files.length > 0) {
     req.files.map(async (file) => {
       const result = await uploadToCloudinary(file.buffer, file.originalname);
       return {
-        url: result.secure_url,
+        url: result.url,
         public_id: result.public_id,
       };
     })
