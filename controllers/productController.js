@@ -163,7 +163,15 @@ const getProductById = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, price, stock, category, subcategory, removeAllImages, existingImages } = req.body;
+    const {
+      name,
+      price,
+      stock,
+      category,
+      subcategory,
+      removeAllImages,
+      existingImages,
+    } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid product ID" });
@@ -174,8 +182,10 @@ const updateProduct = async (req, res) => {
 
     const updates = {};
 
+    // Name
     if (name) updates.name = name;
 
+    // Price
     if (price !== undefined) {
       const parsedPrice = parseFloat(price);
       if (isNaN(parsedPrice) || parsedPrice <= 0) {
@@ -184,6 +194,7 @@ const updateProduct = async (req, res) => {
       updates.price = parsedPrice;
     }
 
+    // Stock
     if (stock !== undefined) {
       const parsedStock = parseInt(stock);
       if (isNaN(parsedStock) || parsedStock < 0) {
@@ -192,52 +203,86 @@ const updateProduct = async (req, res) => {
       updates.stock = parsedStock;
     }
 
+    // Category
     if (category) {
+      if (!mongoose.Types.ObjectId.isValid(category)) {
+        return res.status(400).json({ message: "Invalid category ID" });
+      }
+
       const categoryDoc = await Category.findById(category);
       if (!categoryDoc) {
-        return res.status(400).json({ message: "Invalid category" });
+        return res.status(400).json({ message: "Category not found" });
       }
+
       updates.category = category;
     }
 
+    // Subcategory
     if (subcategory) {
+      if (!mongoose.Types.ObjectId.isValid(subcategory)) {
+        return res.status(400).json({ message: "Invalid subcategory ID" });
+      }
+
       const subcat = await Subcategory.findOne({
         _id: subcategory,
         parent: updates.category || product.category,
       });
+
       if (!subcat) {
         return res.status(400).json({ message: "Invalid subcategory" });
       }
+
       updates.subcategory = subcategory;
     }
 
+    // Images
     let finalImages = [];
 
     if (removeAllImages === "true") {
+      // Удаляем старые изображения из Cloudinary
       for (const img of product.images) {
         if (img.public_id) {
           await cloudinary.uploader.destroy(img.public_id);
         }
       }
     } else {
+      // Обрабатываем существующие изображения (с фронта)
       if (existingImages) {
         try {
-          const parsed = JSON.parse(existingImages);
-          finalImages = parsed.filter(img => img.url && img.public_id);
-        } catch {
+          const parsed =
+            typeof existingImages === "string"
+              ? JSON.parse(existingImages)
+              : existingImages;
+
+          // ❗️Фильтруем изображения, у которых есть и url, и public_id
+          finalImages = parsed.filter(
+            (img) => img.url && img.public_id
+          );
+        } catch (err) {
           return res.status(400).json({ message: "Invalid existingImages format" });
         }
       }
 
-      if (req.files?.length) {
+      // Загружаем новые изображения
+      if (req.files?.length > 0) {
         const newImages = await Promise.all(
-          req.files.map(file => uploadToCloudinary(file.buffer, file.originalname))
+          req.files.map(async (file) => {
+            const result = await uploadToCloudinary(file.buffer, file.originalname);
+            return {
+              url: result.url,
+              public_id: result.public_id,
+            };
+          })
         );
+
         finalImages = [...finalImages, ...newImages];
       }
-    }
 
-    updates.images = finalImages;
+      // Если есть корректные изображения, обновляем
+      if (finalImages.length > 0) {
+        updates.images = finalImages;
+      }
+    }
 
     const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
       new: true,
@@ -250,7 +295,6 @@ const updateProduct = async (req, res) => {
     res.status(500).json({ message: "Failed to update product" });
   }
 };
-
 
 
 const searchProducts = async (req, res) => {
