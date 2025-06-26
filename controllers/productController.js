@@ -239,14 +239,12 @@ const updateProduct = async (req, res) => {
     let finalImages = [];
 
     if (removeAllImages === "true") {
-      // Удаляем старые изображения из Cloudinary
       for (const img of product.images) {
         if (img.public_id) {
           await cloudinary.uploader.destroy(img.public_id);
         }
       }
     } else {
-      // Обрабатываем существующие изображения (с фронта)
       if (existingImages) {
         try {
           const parsed =
@@ -254,7 +252,6 @@ const updateProduct = async (req, res) => {
               ? JSON.parse(existingImages)
               : existingImages;
 
-          // ❗️Фильтруем изображения, у которых есть и url, и public_id
           finalImages = parsed.filter(
             (img) => img.url && img.public_id
           );
@@ -263,7 +260,6 @@ const updateProduct = async (req, res) => {
         }
       }
 
-      // Загружаем новые изображения
       if (req.files?.length > 0) {
         const newImages = await Promise.all(
           req.files.map(async (file) => {
@@ -278,7 +274,6 @@ const updateProduct = async (req, res) => {
         finalImages = [...finalImages, ...newImages];
       }
 
-      // Если есть корректные изображения, обновляем
       if (finalImages.length > 0) {
         updates.images = finalImages;
       }
