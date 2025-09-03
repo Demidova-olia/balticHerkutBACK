@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Запуск app.js",
+      "program": "${workspaceFolder}/my-app-backend/app.js",
+      "env": {
+        "DB_URL": "mongodb+srv://balticherkut:IiYS10eCdaVKDsxn@balticherkut.amr5mtd.mongodb.net/balticHerkut?retryWrites=true&w=majority&appName=balticherkut"
+      },
+      "console": "integratedTerminal"
+    }
+  ]
+}

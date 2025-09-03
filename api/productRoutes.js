@@ -36,6 +36,7 @@ router.put(
   "/:id",
   authMiddleware,
   rolesMiddleware(ROLES.ADMIN),
+  upload.array("images"),
   updateProduct
 );
 
