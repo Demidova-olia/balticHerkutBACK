@@ -4,15 +4,17 @@ const Subcategory = require("../models/subcategoryModel");
 const cloudinary = require("cloudinary").v2;
 const mongoose = require("mongoose");
 const { uploadToCloudinary } = require("../utils/uploadToCloudinary");
+
+/* =========================================================
+ * CREATE
+ * =======================================================*/
 const createProduct = async (req, res) => {
   try {
     const { name, description, price, category, subcategory, stock, brand, discount, isFeatured, isActive } = req.body;
 
-    // Валидация обязательных полей
     if (!name || name.trim().length < 3) {
       return res.status(400).json({ message: "Name is required and must be at least 3 characters" });
     }
-
     if (!description || description.trim().length < 10) {
       return res.status(400).json({ message: "Description is required and must be at least 10 characters" });
     }
@@ -22,12 +24,11 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Price must be a number >= 0" });
     }
 
-    const parsedStock = parseInt(stock);
+    const parsedStock = parseInt(stock, 10);
     if (isNaN(parsedStock) || parsedStock < 0) {
       return res.status(400).json({ message: "Stock must be a non-negative integer" });
     }
 
-    // Проверка категории
     if (!mongoose.Types.ObjectId.isValid(category)) {
       return res.status(400).json({ message: "Invalid category ID" });
     }
@@ -36,7 +37,6 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Category not found" });
     }
 
-    // Проверка подкатегории, если есть
     let subcategoryDoc = null;
     if (subcategory) {
       if (!mongoose.Types.ObjectId.isValid(subcategory)) {
@@ -48,7 +48,6 @@ const createProduct = async (req, res) => {
       }
     }
 
-    // Обработка изображений
     let images = [];
     if (req.files?.length) {
       images = await Promise.all(
@@ -59,15 +58,12 @@ const createProduct = async (req, res) => {
       );
     }
 
-    // Если нет новых файлов, но есть body.images (ссылки), добавим с дефолтным public_id
     if (!images.length && req.body.images) {
       let bodyImages = req.body.images;
-      if (typeof bodyImages === "string") {
-        bodyImages = [bodyImages];
-      }
+      if (typeof bodyImages === "string") bodyImages = [bodyImages];
       images = bodyImages.map((url) => ({
         url,
-        public_id: "default_local_image", // дефолтный public_id для локальных изображений без загрузки в cloudinary
+        public_id: "default_local_image",
       }));
     }
 
@@ -86,7 +82,6 @@ const createProduct = async (req, res) => {
     });
 
     await product.save();
-
     res.status(201).json({ message: "Product created", data: product });
   } catch (err) {
     console.error("Error in createProduct:", err);
@@ -94,6 +89,9 @@ const createProduct = async (req, res) => {
   }
 };
 
+/* =========================================================
+ * LIST
+ * =======================================================*/
 const getProducts = async (req, res) => {
   try {
     const { search, category, subcategory, page = 1, limit = 10 } = req.query;
@@ -115,7 +113,7 @@ const getProducts = async (req, res) => {
       .select("-__v")
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit, 10));
 
     res.status(200).json({
       message: "Products fetched",
@@ -127,6 +125,9 @@ const getProducts = async (req, res) => {
   }
 };
 
+/* =========================================================
+ * GET BY ID
+ * =======================================================*/
 const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -139,9 +140,7 @@ const getProductById = async (req, res) => {
       .populate("subcategory")
       .select("-__v");
 
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
+    if (!product) return res.status(404).json({ message: "Product not found" });
 
     res.status(200).json({ message: "Product fetched", data: product });
   } catch (error) {
@@ -150,6 +149,9 @@ const getProductById = async (req, res) => {
   }
 };
 
+/* =========================================================
+ * BY CATEGORY
+ * =======================================================*/
 const getProductsByCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
@@ -160,6 +162,9 @@ const getProductsByCategory = async (req, res) => {
   }
 };
 
+/* =========================================================
+ * BY CATEGORY + SUBCATEGORY
+ * =======================================================*/
 const getProductsByCategoryAndSubcategory = async (req, res) => {
   try {
     const { categoryId, subcategoryId } = req.params;
@@ -170,181 +175,133 @@ const getProductsByCategoryAndSubcategory = async (req, res) => {
   }
 };
 
+/* =========================================================
+ * UPDATE (устойчив к пустому req.body в multipart)
+ * =======================================================*/
 const updateProduct = async (req, res) => {
-  console.log('req.body:', req.body);
-  console.log('req.files:', req.files);
-  res.json({ body: req.body, files: req.files });
   try {
-    const { id } = req.params;
-    const {
-      name,
-      description,
-      price,
-      stock,
-      category,
-      subcategory,
-      removeAllImages,
-      existingImages,
-      brand,
-      discount,
-      isFeatured,
-      isActive,
-    } = req.body;
+    const contentType = req.headers["content-type"] || "";
+    console.log("[updateProduct] content-type:", contentType);
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid product ID" });
+    const productId = req.params.id;
+    const files = req.files || [];
+    const body = req.body || {}; // КЛЮЧЕВОЕ: не падать, если body = undefined
+
+    const {
+      name, description, price, stock, category, subcategory,
+      removeAllImages, existingImages
+    } = body;
+
+    // 1) базовая валидация
+    if (!name || !description || category == null) {
+      return res.status(400).json({ message: "Missing required fields: name/description/category" });
     }
 
-    const product = await Product.findById(id);
+    // 2) числа
+    const parsedPrice = Number(price);
+    const parsedStock = Number.isInteger(Number(stock)) ? Number(stock) : NaN;
+
+    if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+      return res.status(400).json({ message: "Price must be a non-negative number" });
+    }
+    if (!Number.isFinite(parsedStock) || parsedStock < 0) {
+      return res.status(400).json({ message: "Stock must be a non-negative integer" });
+    }
+
+    // 3) категория/подкатегория
+    if (!mongoose.Types.ObjectId.isValid(category)) {
+      return res.status(400).json({ message: "Invalid category ID" });
+    }
+
+    const normSub = (val) => {
+      if (val == null) return undefined;
+      if (typeof val !== "string") return val;
+      const t = val.trim().toLowerCase();
+      if (!t || t === "undefined" || t === "null") return undefined;
+      return val;
+    };
+    const normalizedSubcategory = normSub(subcategory);
+    if (normalizedSubcategory && !mongoose.Types.ObjectId.isValid(normalizedSubcategory)) {
+      return res.status(400).json({ message: "Invalid subcategory ID" });
+    }
+
+    // 4) продукт
+    const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const updates = {};
+    product.name = String(name).trim();
+    product.description = String(description).trim();
+    product.price = parsedPrice;
+    product.stock = parsedStock;
+    product.category = category;
+    product.subcategory = normalizedSubcategory || undefined; // ВАЖНО: не писать ''
 
-    if (name) {
-      if (typeof name !== "string" || name.trim().length < 3) {
-        return res.status(400).json({ message: "Name must be at least 3 characters" });
-      }
-      updates.name = name.trim();
-    }
-
-    if (description) {
-      if (typeof description !== "string" || description.trim().length < 10) {
-        return res.status(400).json({ message: "Description must be at least 10 characters" });
-      }
-      updates.description = description.trim();
-    }
-
-    if (price !== undefined) {
-      const parsedPrice = parseFloat(price);
-      if (isNaN(parsedPrice) || parsedPrice < 0) {
-        return res.status(400).json({ message: "Price must be a number >= 0" });
-      }
-      updates.price = parsedPrice;
-    }
-
-    if (stock !== undefined) {
-      const parsedStock = parseInt(stock);
-      if (isNaN(parsedStock) || parsedStock < 0) {
-        return res.status(400).json({ message: "Stock must be a non-negative integer" });
-      }
-      updates.stock = parsedStock;
-    }
-
-    if (category) {
-      if (!mongoose.Types.ObjectId.isValid(category)) {
-        return res.status(400).json({ message: "Invalid category ID" });
-      }
-      const catDoc = await Category.findById(category);
-      if (!catDoc) {
-        return res.status(400).json({ message: "Category not found" });
-      }
-      updates.category = category;
-    }
-
-    if (subcategory) {
-      if (!mongoose.Types.ObjectId.isValid(subcategory)) {
-        return res.status(400).json({ message: "Invalid subcategory ID" });
-      }
-      // Подкатегория должна принадлежать к текущей или обновляемой категории
-      const parentCatId = updates.category || product.category;
-      const subcatDoc = await Subcategory.findOne({ _id: subcategory, parent: parentCatId });
-      if (!subcatDoc) {
-        return res.status(400).json({ message: "Invalid subcategory or does not belong to category" });
-      }
-      updates.subcategory = subcategory;
-    }
-
-    if (brand !== undefined) {
-      if (typeof brand !== "string") {
-        return res.status(400).json({ message: "Brand must be a string" });
-      }
-      updates.brand = brand.trim();
-    }
-
-    if (discount !== undefined) {
-      const parsedDiscount = Number(discount);
-      if (isNaN(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 100) {
-        return res.status(400).json({ message: "Discount must be a number between 0 and 100" });
-      }
-      updates.discount = parsedDiscount;
-    }
-
-    if (isFeatured !== undefined) {
-      updates.isFeatured = isFeatured === "true" || isFeatured === true;
-    }
-
-    if (isActive !== undefined) {
-      updates.isActive = isActive === "true" || isActive === true;
-    }
-
-    // Работа с изображениями
-    let finalImages = [];
-
-    if (removeAllImages === "true") {
-      // Удаляем картинки из cloudinary
-      for (const img of product.images) {
-        if (img.public_id && img.public_id !== "default_local_image") {
-          await cloudinary.uploader.destroy(img.public_id);
+    // 5) существующие изображения
+    let existingImagesParsed = [];
+    if (typeof existingImages !== "undefined") {
+      if (Array.isArray(existingImages)) {
+        existingImagesParsed = existingImages;
+      } else if (typeof existingImages === "string") {
+        const s = existingImages.trim();
+        if (s && s !== "undefined" && s !== "null") {
+          try {
+            const parsed = JSON.parse(s);
+            if (Array.isArray(parsed)) existingImagesParsed = parsed;
+          } catch {
+            if (/^https?:\/\//i.test(s)) {
+              existingImagesParsed = [{ url: s, public_id: "default_local_image" }];
+            }
+          }
         }
       }
-      // После удаления изображений, если не добавлять новых — картинки будут пусты
-    } else {
-      if (existingImages) {
-        try {
-          // existingImages может прийти как строка JSON или уже как массив
-          const parsed = typeof existingImages === "string" ? JSON.parse(existingImages) : existingImages;
+    }
 
-          // Каждый элемент должен иметь url и public_id (если есть)
-          finalImages = parsed.map((img) => {
-            if (typeof img === "string") {
-              // Если строка — считаем это url, добавим дефолтный public_id
-              return { url: img, public_id: "default_local_image" };
-            }
-            if (img.url) {
-              // Если public_id нет — тоже добавим дефолтный
-              return {
-                url: img.url,
-                public_id: img.public_id || "default_local_image",
-              };
-            }
-            return null;
-          }).filter(Boolean);
-        } catch {
-          return res.status(400).json({ message: "Invalid existingImages format" });
-        }
-      }
+    const shouldRemoveAll = removeAllImages === true || removeAllImages === "true";
+    if (shouldRemoveAll) {
+      product.images = [];
+    } else if (existingImagesParsed.length) {
+      product.images = existingImagesParsed;
+    }
 
-      if (req.files?.length > 0) {
-        const newImages = await Promise.all(
-          req.files.map(async (file) => {
-            const result = await uploadToCloudinary(file.buffer, file.originalname);
-            return { url: result.url, public_id: result.public_id };
-          })
+    // 6) загрузка новых файлов в Cloudinary (если есть)
+    const uploadFromBuffer = (buffer) =>
+      new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "products", resource_type: "image" },
+          (error, result) => (error ? reject(error) : resolve(result))
         );
-        finalImages = [...finalImages, ...newImages];
+        stream.end(buffer);
+      });
+
+    let newImages = [];
+    if (files.length) {
+      const uploadResults = await Promise.all(files.map((f) => uploadFromBuffer(f.buffer)));
+      newImages = uploadResults.map((r) => ({ url: r.secure_url, public_id: r.public_id }));
+    }
+    if (newImages.length) {
+      product.images = (product.images || []).concat(newImages);
+    }
+
+    // 7) сохраняем
+    try {
+      await product.save();
+    } catch (e) {
+      if (e.name === "ValidationError" || e.name === "CastError") {
+        return res.status(400).json({ message: e.message });
       }
+      throw e;
     }
 
-    if (finalImages.length > 0) {
-      updates.images = finalImages;
-    }
-
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ message: "No updates provided" });
-    }
-
-    const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
-      new: true,
-      runValidators: true,
-    });
-
-    res.status(200).json({ message: "Product updated", data: updatedProduct });
-  } catch (err) {
-    console.error("Error in updateProduct:", err);
-    res.status(500).json({ message: "Failed to update product" });
+    return res.status(200).json({ message: "Product updated", data: product });
+  } catch (error) {
+    console.error("Error in updateProduct:", error, { headers: req.headers });
+    return res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
+/* =========================================================
+ * SEARCH (единственная версия!)
+ * =======================================================*/
 const searchProducts = async (req, res) => {
   try {
     const { q } = req.query;
@@ -354,13 +311,14 @@ const searchProducts = async (req, res) => {
     }
 
     const regex = new RegExp(q, "i");
-
     const products = await Product.find({
       $or: [{ name: regex }, { description: regex }],
     })
       .limit(30)
       .populate("category")
-      .populate("subcategory");
+      .populate("subcategory")
+      .select("-__v")
+      .sort({ createdAt: -1 });
 
     res.status(200).json({ message: "Search completed", data: products });
   } catch (error) {
@@ -369,83 +327,121 @@ const searchProducts = async (req, res) => {
   }
 };
 
-// Delete Product
+/* =========================================================
+ * DELETE PRODUCT (+ чистим Cloudinary)
+ * =======================================================*/
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
 
     const product = await Product.findById(id);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    for (const image of product.images) {
-      if (image.public_id && image.public_id !== "default_local_image") {
-        await cloudinary.uploader.destroy(image.public_id);
-      }
-    }
+    const toDelete = (product.images || [])
+      .map((i) => i.public_id)
+      .filter((pid) => pid && pid !== "default_local_image");
 
-    const deleted = await Product.findByIdAndDelete(id);
-    res.json({ message: "Product was removed", data: deleted });
+    await Promise.all(toDelete.map((pid) => cloudinary.uploader.destroy(pid).catch(() => null)));
+
+    await product.deleteOne();
+    res.status(200).json({ message: "Product deleted" });
   } catch (error) {
-    res.status(500).send(error);
+    console.error("Error in deleteProduct:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
-// Delete Image
+/* =========================================================
+ * DELETE ONE IMAGE
+ * =======================================================*/
 const deleteProductImage = async (req, res) => {
   try {
     const { productId, publicId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    if (!publicId) return res.status(400).json({ message: "publicId is required" });
 
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const image = product.images.find((img) => img.public_id === publicId);
-    if (!image) return res.status(404).json({ message: "Image not found" });
+    const existed = product.images?.some((img) => img.public_id === publicId);
+    if (!existed) return res.status(404).json({ message: "Image not found on product" });
 
-    await cloudinary.uploader.destroy(publicId);
+    if (publicId !== "default_local_image") {
+      try { await cloudinary.uploader.destroy(publicId); } catch (_) {}
+    }
+
     product.images = product.images.filter((img) => img.public_id !== publicId);
     await product.save();
 
-    res.status(200).json({ message: "Image deleted", data: product.images });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to delete image" });
+    res.status(200).json({ message: "Image removed", data: product.images });
+  } catch (error) {
+    console.error("Error in deleteProductImage:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
-// Update Image
+/* =========================================================
+ * UPDATE ONE IMAGE
+ * =======================================================*/
 const updateProductImage = async (req, res) => {
   try {
     const { productId, publicId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    if (!publicId) return res.status(400).json({ message: "publicId is required" });
+    if (!req.file) return res.status(400).json({ message: "No image file uploaded" });
 
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const index = product.images.findIndex((img) => img.public_id === publicId);
-    if (index === -1) return res.status(404).json({ message: "Image not found" });
+    const idx = product.images.findIndex((img) => img.public_id === publicId);
+    if (idx === -1) return res.status(404).json({ message: "Image not found on product" });
 
-    const file = req.file;
-    if (!file) return res.status(400).json({ message: "No image uploaded" });
+    const uploadFromBuffer = (buffer) =>
+      new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "products", resource_type: "image" },
+          (error, result) => (error ? reject(error) : resolve(result))
+        );
+        stream.end(buffer);
+      });
 
-    await cloudinary.uploader.destroy(publicId);
-    const newImage = await uploadToCloudinary(file.buffer, file.originalname);
+    const uploaded = await uploadFromBuffer(req.file.buffer);
 
-    product.images[index] = newImage;
+    const oldPid = product.images[idx].public_id;
+    if (oldPid && oldPid !== "default_local_image") {
+      try { await cloudinary.uploader.destroy(oldPid); } catch (_) {}
+    }
+
+    product.images[idx] = {
+      url: uploaded.secure_url,
+      public_id: uploaded.public_id,
+    };
+
     await product.save();
-
-    res.status(200).json({ message: "Image updated", data: newImage });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to update image" });
+    res.status(200).json({ message: "Image updated", data: product.images[idx] });
+  } catch (error) {
+    console.error("Error in updateProductImage:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
 module.exports = {
+  createProduct,
   getProducts,
+  getProductById,
   getProductsByCategory,
   getProductsByCategoryAndSubcategory,
-  getProductById,
-  createProduct,
   updateProduct,
   searchProducts,
   deleteProduct,
   deleteProductImage,
   updateProductImage,
 };
+
