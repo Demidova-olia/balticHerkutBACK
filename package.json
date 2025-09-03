@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "description": "",
   "main": "app.js",
+  "type": "commonjs",
   "scripts": {
+    "start": "node app.js",
     "app": "node --watch --watch-preserve-output app.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "cloudinary": "^2.7.0",
@@ -20,7 +21,6 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.14.1",
     "multer": "^1.4.5-lts.2",
-    "multer-storage-cloudinary": "^4.0.0",
     "streamifier": "^0.1.1"
   },
   "devDependencies": {
