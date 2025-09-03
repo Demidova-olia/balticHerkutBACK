@@ -10,22 +10,23 @@ const { uploadToCloudinary } = require("../utils/uploadToCloudinary");
  * =======================================================*/
 const createProduct = async (req, res) => {
   try {
-    const { name, description, price, category, subcategory, stock, brand, discount, isFeatured, isActive } = req.body;
+    const body = req.body || {};
+    const { name, description, price, category, subcategory, stock, brand, discount, isFeatured, isActive } = body;
 
-    if (!name || name.trim().length < 3) {
+    if (!name || String(name).trim().length < 3) {
       return res.status(400).json({ message: "Name is required and must be at least 3 characters" });
     }
-    if (!description || description.trim().length < 10) {
+    if (!description || String(description).trim().length < 10) {
       return res.status(400).json({ message: "Description is required and must be at least 10 characters" });
     }
 
-    const parsedPrice = parseFloat(price);
-    if (isNaN(parsedPrice) || parsedPrice < 0) {
+    const parsedPrice = Number(price);
+    if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
       return res.status(400).json({ message: "Price must be a number >= 0" });
     }
 
-    const parsedStock = parseInt(stock, 10);
-    if (isNaN(parsedStock) || parsedStock < 0) {
+    const parsedStock = Number.parseInt(stock, 10);
+    if (!Number.isFinite(parsedStock) || parsedStock < 0) {
       return res.status(400).json({ message: "Stock must be a non-negative integer" });
     }
 
@@ -37,17 +38,27 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Category not found" });
     }
 
+    // нормализация subcategory
+    const normSub = (val) => {
+      if (val == null) return undefined;
+      if (typeof val !== "string") return val;
+      const t = val.trim().toLowerCase();
+      if (!t || t === "undefined" || t === "null") return undefined;
+      return val;
+    };
     let subcategoryDoc = null;
-    if (subcategory) {
-      if (!mongoose.Types.ObjectId.isValid(subcategory)) {
+    const normalizedSubcategory = normSub(subcategory);
+    if (normalizedSubcategory) {
+      if (!mongoose.Types.ObjectId.isValid(normalizedSubcategory)) {
         return res.status(400).json({ message: "Invalid subcategory ID" });
       }
-      subcategoryDoc = await Subcategory.findOne({ _id: subcategory, parent: category });
+      subcategoryDoc = await Subcategory.findOne({ _id: normalizedSubcategory, parent: category });
       if (!subcategoryDoc) {
         return res.status(400).json({ message: "Subcategory invalid or does not belong to category" });
       }
     }
 
+    // изображения
     let images = [];
     if (req.files?.length) {
       images = await Promise.all(
@@ -57,9 +68,8 @@ const createProduct = async (req, res) => {
         })
       );
     }
-
-    if (!images.length && req.body.images) {
-      let bodyImages = req.body.images;
+    if (!images.length && body.images) {
+      let bodyImages = body.images;
       if (typeof bodyImages === "string") bodyImages = [bodyImages];
       images = bodyImages.map((url) => ({
         url,
@@ -68,14 +78,14 @@ const createProduct = async (req, res) => {
     }
 
     const product = new Product({
-      name: name.trim(),
-      description: description.trim(),
+      name: String(name).trim(),
+      description: String(description).trim(),
       price: parsedPrice,
       category,
       subcategory: subcategoryDoc?._id,
       stock: parsedStock,
       images,
-      brand: brand ? brand.trim() : undefined,
+      brand: brand ? String(brand).trim() : undefined,
       discount: discount !== undefined ? Number(discount) : undefined,
       isFeatured: isFeatured === "true" || isFeatured === true,
       isActive: isActive === "false" || isActive === false ? false : true,
@@ -247,12 +257,18 @@ const updateProduct = async (req, res) => {
           try {
             const parsed = JSON.parse(s);
             if (Array.isArray(parsed)) existingImagesParsed = parsed;
+            // если пришёл объект {url, public_id}
+            else if (parsed && parsed.url && parsed.public_id) {
+              existingImagesParsed = [parsed];
+            }
           } catch {
             if (/^https?:\/\//i.test(s)) {
               existingImagesParsed = [{ url: s, public_id: "default_local_image" }];
             }
           }
         }
+      } else if (existingImages && existingImages.url && existingImages.public_id) {
+        existingImagesParsed = [existingImages];
       }
     }
 
@@ -444,4 +460,3 @@ module.exports = {
   deleteProductImage,
   updateProductImage,
 };
-
