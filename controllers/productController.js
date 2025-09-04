@@ -38,7 +38,6 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Category not found" });
     }
 
-    // нормализация subcategory
     const normSub = (val) => {
       if (val == null) return undefined;
       if (typeof val !== "string") return val;
@@ -58,7 +57,6 @@ const createProduct = async (req, res) => {
       }
     }
 
-    // изображения
     let images = [];
     if (req.files?.length) {
       images = await Promise.all(
@@ -185,9 +183,6 @@ const getProductsByCategoryAndSubcategory = async (req, res) => {
   }
 };
 
-/* =========================================================
- * UPDATE (устойчив к пустому req.body в multipart)
- * =======================================================*/
 const updateProduct = async (req, res) => {
   try {
     const contentType = req.headers["content-type"] || "";
@@ -195,19 +190,17 @@ const updateProduct = async (req, res) => {
 
     const productId = req.params.id;
     const files = req.files || [];
-    const body = req.body || {}; // КЛЮЧЕВОЕ: не падать, если body = undefined
+    const body = req.body || {}; 
 
     const {
       name, description, price, stock, category, subcategory,
       removeAllImages, existingImages
     } = body;
 
-    // 1) базовая валидация
     if (!name || !description || category == null) {
       return res.status(400).json({ message: "Missing required fields: name/description/category" });
     }
 
-    // 2) числа
     const parsedPrice = Number(price);
     const parsedStock = Number.isInteger(Number(stock)) ? Number(stock) : NaN;
 
@@ -218,7 +211,6 @@ const updateProduct = async (req, res) => {
       return res.status(400).json({ message: "Stock must be a non-negative integer" });
     }
 
-    // 3) категория/подкатегория
     if (!mongoose.Types.ObjectId.isValid(category)) {
       return res.status(400).json({ message: "Invalid category ID" });
     }
@@ -235,7 +227,6 @@ const updateProduct = async (req, res) => {
       return res.status(400).json({ message: "Invalid subcategory ID" });
     }
 
-    // 4) продукт
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
@@ -244,9 +235,8 @@ const updateProduct = async (req, res) => {
     product.price = parsedPrice;
     product.stock = parsedStock;
     product.category = category;
-    product.subcategory = normalizedSubcategory || undefined; // ВАЖНО: не писать ''
+    product.subcategory = normalizedSubcategory || undefined; 
 
-    // 5) существующие изображения
     let existingImagesParsed = [];
     if (typeof existingImages !== "undefined") {
       if (Array.isArray(existingImages)) {
@@ -257,7 +247,6 @@ const updateProduct = async (req, res) => {
           try {
             const parsed = JSON.parse(s);
             if (Array.isArray(parsed)) existingImagesParsed = parsed;
-            // если пришёл объект {url, public_id}
             else if (parsed && parsed.url && parsed.public_id) {
               existingImagesParsed = [parsed];
             }
@@ -279,7 +268,6 @@ const updateProduct = async (req, res) => {
       product.images = existingImagesParsed;
     }
 
-    // 6) загрузка новых файлов в Cloudinary (если есть)
     const uploadFromBuffer = (buffer) =>
       new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -298,7 +286,6 @@ const updateProduct = async (req, res) => {
       product.images = (product.images || []).concat(newImages);
     }
 
-    // 7) сохраняем
     try {
       await product.save();
     } catch (e) {
@@ -315,9 +302,6 @@ const updateProduct = async (req, res) => {
   }
 };
 
-/* =========================================================
- * SEARCH (единственная версия!)
- * =======================================================*/
 const searchProducts = async (req, res) => {
   try {
     const { q } = req.query;
@@ -343,9 +327,6 @@ const searchProducts = async (req, res) => {
   }
 };
 
-/* =========================================================
- * DELETE PRODUCT (+ чистим Cloudinary)
- * =======================================================*/
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
@@ -370,9 +351,6 @@ const deleteProduct = async (req, res) => {
   }
 };
 
-/* =========================================================
- * DELETE ONE IMAGE
- * =======================================================*/
 const deleteProductImage = async (req, res) => {
   try {
     const { productId, publicId } = req.params;
@@ -401,9 +379,6 @@ const deleteProductImage = async (req, res) => {
   }
 };
 
-/* =========================================================
- * UPDATE ONE IMAGE
- * =======================================================*/
 const updateProductImage = async (req, res) => {
   try {
     const { productId, publicId } = req.params;

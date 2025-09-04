@@ -9,17 +9,15 @@ const cors = require("cors");
 
 const app = express();
 
-/* ----------------- CORS (ставим РАНО) ----------------- */
 const allowedOrigins = [
   "http://localhost:5173",
-  // добавь продовый фронт, если есть:
-  // "https://your-frontend-domain.com"
+ 
 ];
 
 app.use(
   cors({
     origin(origin, cb) {
-      // Разрешаем запросы без Origin (Postman / сервер->сервер)
+
       if (!origin) return cb(null, true);
       if (allowedOrigins.includes(origin)) return cb(null, true);
       return cb(new Error("Not allowed by CORS"));
@@ -32,7 +30,6 @@ app.use(
 );
 
 
-/* ----------------- Парсеры ----------------- */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -43,13 +40,11 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-/* ----------------- Health-check / root (ДОЛЖЕН быть до 404) ----------------- */
 app.get("/", (req, res) => {
-  // не используем res.render без view engine
+
   res.status(200).json({ status: "ok", service: "my-app-backend" });
 });
 
-/* ----------------- Роуты API ----------------- */
 const uploadRoutes = require("./api/uploadRoutes");
 const userAPIRoutes = require("./api/usersRoutes");
 const productsAPIRoutes = require("./api/productRoutes");
@@ -72,12 +67,10 @@ app.use("/api/admin", adminAPIRoutes);
 app.use("/api/reviews", reviewAPIRoutes);
 app.use('/api/about', aboutRoutes);
 
-/* ----------------- 404 (после всех роутов) ----------------- */
 app.use((req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
 
-/* ----------------- Глобальный обработчик ошибок (самый последний) ----------------- */
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
 
@@ -91,6 +84,5 @@ app.use((err, req, res, next) => {
   });
 });
 
-/* ----------------- Старт ----------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server is running on port ${PORT}.`));

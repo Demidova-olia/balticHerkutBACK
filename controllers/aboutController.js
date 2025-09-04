@@ -2,9 +2,6 @@
 const cloudinary = require("cloudinary").v2;
 const AboutContent = require("../models/aboutContentModel");
 
-/**
- * Вспомогательная загрузка изображения в Cloudinary из буфера (multer memoryStorage)
- */
 const uploadFromBuffer = (buffer, folder = "about") =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -14,10 +11,7 @@ const uploadFromBuffer = (buffer, folder = "about") =>
     stream.end(buffer);
   });
 
-/**
- * GET /api/about
- * Возвращает единственный документ с контентом «О нас».
- */
+
 exports.getAbout = async (req, res) => {
   try {
     let doc = await AboutContent.findOne();
@@ -31,17 +25,8 @@ exports.getAbout = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/about  (только админ)
- * Принимает:
- *  - либо обычный JSON-тelo (application/json),
- *  - либо FormData c полем "payload" (JSON-строка) и файлами:
- *      heroImage, storeImage, requisitesImage
- * Обновляет единственный документ.
- */
 exports.updateAbout = async (req, res) => {
   try {
-    // Базовые данные: либо JSON-тело, либо JSON-строка в payload
     let body = {};
     if (req.is("application/json")) {
       body = req.body || {};
@@ -55,11 +40,9 @@ exports.updateAbout = async (req, res) => {
       body = req.body || {};
     }
 
-    // Находим или создаём документ
     let doc = await AboutContent.findOne();
     if (!doc) doc = new AboutContent({});
 
-    // Если присланы файлы — грузим в Cloudinary и подставляем URL
     if (req.files?.heroImage?.[0]?.buffer) {
       const up = await uploadFromBuffer(req.files.heroImage[0].buffer, "about/hero");
       body.heroImageUrl = up.secure_url;
@@ -73,7 +56,6 @@ exports.updateAbout = async (req, res) => {
       body.requisitesImageUrl = up.secure_url;
     }
 
-    // Разрешённые поля (соответствуют фронту)
     const fields = [
       "heroImageUrl",
       "title",
@@ -94,9 +76,8 @@ exports.updateAbout = async (req, res) => {
       }
     }
 
-    // отметим, кто обновил (если в req.user есть _id)
     if (req.user?._id) {
-      doc.updatedBy = req.user._id; // поле опционально, если есть в схеме
+      doc.updatedBy = req.user._id; 
     }
 
     await doc.save();
