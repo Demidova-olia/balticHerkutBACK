@@ -59,6 +59,7 @@ const favoriteAPIRoutes = require("./api/favoriteRoutes");
 const ordersAPIRoutes = require("./api/orderRoutes");
 const adminAPIRoutes = require("./api/adminRoutes");
 const reviewAPIRoutes = require("./api/reviewRoutes");
+const aboutRoutes = require('./api/aboutRoutes');
 
 app.use("/api", uploadRoutes);
 app.use("/api/users", userAPIRoutes);
@@ -69,6 +70,7 @@ app.use("/api/favorites", favoriteAPIRoutes);
 app.use("/api/orders", ordersAPIRoutes);
 app.use("/api/admin", adminAPIRoutes);
 app.use("/api/reviews", reviewAPIRoutes);
+app.use('/api/about', aboutRoutes);
 
 /* ----------------- 404 (после всех роутов) ----------------- */
 app.use((req, res, next) => {
