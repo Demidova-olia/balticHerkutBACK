@@ -11,24 +11,31 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
- 
+  // "https://your-frontend.example.com", // добавь прод-URL, если есть
 ];
 
-app.use(
-  cors({
-    origin(origin, cb) {
+const corsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "Accept-Language",
+    "X-Requested-With"
+    // "X-Client-Lang" // можно добавить, если решишь вернуть его на фронте
+  ],
+  exposedHeaders: ["Set-Cookie"],
+  optionsSuccessStatus: 204,
+};
 
-      if (!origin) return cb(null, true);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    exposedHeaders: ["Content-Type", "Authorization"],
-  })
-);
-
+app.use(cors(corsOptions));
+// важно: отвечать на preflight для любых путей
+app.options("*", cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -41,7 +48,6 @@ cloudinary.config({
 });
 
 app.get("/", (req, res) => {
-
   res.status(200).json({ status: "ok", service: "my-app-backend" });
 });
 
@@ -54,7 +60,7 @@ const favoriteAPIRoutes = require("./api/favoriteRoutes");
 const ordersAPIRoutes = require("./api/orderRoutes");
 const adminAPIRoutes = require("./api/adminRoutes");
 const reviewAPIRoutes = require("./api/reviewRoutes");
-const aboutRoutes = require('./api/aboutRoutes');
+const aboutRoutes = require("./api/aboutRoutes");
 
 app.use("/api", uploadRoutes);
 app.use("/api/users", userAPIRoutes);
@@ -65,7 +71,7 @@ app.use("/api/favorites", favoriteAPIRoutes);
 app.use("/api/orders", ordersAPIRoutes);
 app.use("/api/admin", adminAPIRoutes);
 app.use("/api/reviews", reviewAPIRoutes);
-app.use('/api/about', aboutRoutes);
+app.use("/api/about", aboutRoutes);
 
 app.use((req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
