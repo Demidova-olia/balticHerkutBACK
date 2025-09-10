@@ -17,20 +17,35 @@ const router = express.Router();
 router.get(
   "/",
   authMiddleware,
-  rolesMiddleware(ROLES.ADMIN, ROLES.USER),
+  rolesMiddleware(ROLES.ADMIN),
   getOrders
 );
+
+
 router.get(
   "/user/:userId",
   authMiddleware,
   rolesMiddleware(ROLES.USER),
   getUserOrders
 );
+
+
 router.get("/:id", authMiddleware, getOrderById);
-router.post("/", authMiddleware, createOrder);
-router.put("/:id", authMiddleware, rolesMiddleware(ROLES.ADMIN), updateOrder);
-router.delete("/:id", authMiddleware, deleteOrder);
+
+
 router.post("/checkout", authMiddleware, checkout);
-router.get("/user/:userId", authMiddleware, rolesMiddleware(ROLES.USER), getUserOrders);
+
+
+router.post("/", authMiddleware, createOrder);
+
+
+router.put(
+  "/:id",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  updateOrder
+);
+
+router.delete("/:id", authMiddleware, deleteOrder);
 
 module.exports = router;
