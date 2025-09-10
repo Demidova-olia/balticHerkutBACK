@@ -100,7 +100,6 @@ const createProduct = async (req, res) => {
       }));
     }
 
-    // ===== i18n поля =====
     const name_i18n = await buildLocalizedField(String(name).trim());
     const description_i18n = await buildLocalizedField(String(description).trim());
 
@@ -120,7 +119,6 @@ const createProduct = async (req, res) => {
 
     await product.save();
 
-    // Отдадим локализованно под запрос
     const want = pickLangFromReq(req);
     const data = product.toObject();
     data.name_i18n = data.name;
@@ -145,7 +143,6 @@ const getProducts = async (req, res) => {
     const query = {};
     if (search) {
       const regex = new RegExp(search, "i");
-      // искать по всем языкам
       query.$or = [
         { "name.ru": regex },
         { "name.en": regex },
@@ -290,8 +287,6 @@ const updateProduct = async (req, res) => {
 
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
-
-    // валидация обязательных только если они присланы
     if (name && String(name).trim().length < 3) {
       return res.status(400).json({ message: "Name must be at least 3 characters" });
     }
@@ -344,7 +339,6 @@ const updateProduct = async (req, res) => {
     if (typeof isActive !== "undefined")
       product.isActive = !(isActive === "false" || isActive === false);
 
-    // ----- локализация -----
     if (name) {
       product.name = await updateLocalizedField(product.name, String(name).trim());
     }
@@ -355,7 +349,6 @@ const updateProduct = async (req, res) => {
       );
     }
 
-    // ----- изображения -----
     let existingImagesParsed = [];
     if (typeof existingImages !== "undefined") {
       if (Array.isArray(existingImages)) {
@@ -464,12 +457,10 @@ const searchProducts = async (req, res) => {
   }
 };
 
-/* =========================================================
- * DELETE & IMAGES (без изменений логики)
- * =======================================================*/
-const deleteProduct = async (req, res) => { /* ... без изменений ... */ };
-const deleteProductImage = async (req, res) => { /* ... без изменений ... */ };
-const updateProductImage = async (req, res) => { /* ... без изменений ... */ };
+
+const deleteProduct = async (req, res) => {  };
+const deleteProductImage = async (req, res) => { };
+const updateProductImage = async (req, res) => { };
 
 module.exports = {
   createProduct,

@@ -11,11 +11,12 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
-  // "https://your-frontend.example.com", // добавь прод-URL, если есть
+ 
 ];
 
 const corsOptions = {
   origin(origin, cb) {
+
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS"));
@@ -26,17 +27,17 @@ const corsOptions = {
     "Content-Type",
     "Authorization",
     "Accept-Language",
-    "X-Requested-With"
-    // "X-Client-Lang" // можно добавить, если решишь вернуть его на фронте
+    "X-Requested-With",
+    // "X-Client-Lang",
   ],
   exposedHeaders: ["Set-Cookie"],
   optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
-// важно: отвечать на preflight для любых путей
-app.options("*", cors(corsOptions));
 
+
+/* ----------------- Body parsers ----------------- */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -46,6 +47,7 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
 
 app.get("/", (req, res) => {
   res.status(200).json({ status: "ok", service: "my-app-backend" });
