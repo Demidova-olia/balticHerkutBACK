@@ -6,7 +6,7 @@ const LocalizedStringSchema = new mongoose.Schema(
     en: { type: String, default: "" },
     fi: { type: String, default: "" },
     _source: { type: String, enum: ["ru", "en", "fi"], default: "en" },
-    _mt: { type: Map, of: Boolean, default: {} }, // метки машинных переводов
+    _mt: { type: Map, of: Boolean, default: {} }, 
   },
   { _id: false }
 );
