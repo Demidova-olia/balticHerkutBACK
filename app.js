@@ -1,17 +1,20 @@
+// app.js
 const express = require("express");
 require("dotenv").config();
 require("./db");
 
+const path = require("path");
+const cors = require("cors");
+const cloudinary = require("cloudinary").v2;
+
 const AppError = require("./utils/appError");
 const globalErrorHandler = require("./controllers/errorController");
-const cloudinary = require("cloudinary").v2;
-const cors = require("cors");
 
 const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
- 
+
 ];
 
 const corsOptions = {
@@ -28,7 +31,6 @@ const corsOptions = {
     "Authorization",
     "Accept-Language",
     "X-Requested-With",
-    // "X-Client-Lang",
   ],
   exposedHeaders: ["Set-Cookie"],
   optionsSuccessStatus: 204,
@@ -36,22 +38,25 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+app.options("*", cors(corsOptions));
 
-/* ----------------- Body parsers ----------------- */
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", 1); 
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-/* ----------------- Cloudinary ----------------- */
+
+app.use("/images", express.static(path.join(__dirname, "public", "images")));
+
 cloudinary.config({
   cloud_name: "diw6ugcy3",
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-
 app.get("/", (req, res) => {
   res.status(200).json({ status: "ok", service: "my-app-backend" });
 });
+
 
 const uploadRoutes = require("./api/uploadRoutes");
 const userAPIRoutes = require("./api/usersRoutes");
@@ -75,6 +80,7 @@ app.use("/api/admin", adminAPIRoutes);
 app.use("/api/reviews", reviewAPIRoutes);
 app.use("/api/about", aboutRoutes);
 
+
 app.use((req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
@@ -91,6 +97,7 @@ app.use((err, req, res, next) => {
     message: err.message || "Internal Server Error",
   });
 });
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server is running on port ${PORT}.`));
