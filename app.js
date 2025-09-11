@@ -14,36 +14,27 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
-
 ];
 
 const corsOptions = {
   origin(origin, cb) {
-
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "Accept-Language",
-    "X-Requested-With",
-  ],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept-Language", "X-Requested-With"],
   exposedHeaders: ["Set-Cookie"],
   optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
 
-app.options("*", cors(corsOptions));
 
-app.set("trust proxy", 1); 
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-
 
 app.use("/images", express.static(path.join(__dirname, "public", "images")));
 
@@ -56,7 +47,6 @@ cloudinary.config({
 app.get("/", (req, res) => {
   res.status(200).json({ status: "ok", service: "my-app-backend" });
 });
-
 
 const uploadRoutes = require("./api/uploadRoutes");
 const userAPIRoutes = require("./api/usersRoutes");
@@ -80,24 +70,20 @@ app.use("/api/admin", adminAPIRoutes);
 app.use("/api/reviews", reviewAPIRoutes);
 app.use("/api/about", aboutRoutes);
 
-
 app.use((req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
 
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
-
   if (globalErrorHandler) {
     return globalErrorHandler(err, req, res, next);
   }
-
   res.status(err.statusCode || 500).json({
     status: "error",
     message: err.message || "Internal Server Error",
   });
 });
-
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server is running on port ${PORT}.`));
