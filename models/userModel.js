@@ -23,6 +23,7 @@ const userSchema = new mongoose.Schema(
       required: true,
       unique: true,
       lowercase: true,
+      trim: true,
       validate: {
         validator(value) {
           return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -34,7 +35,6 @@ const userSchema = new mongoose.Schema(
     password: {
       type: String,
       required: true,
-
     },
 
     role: {
@@ -47,9 +47,11 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-profilePicture: {
+
+    profilePicture: {
       type: String,
-      default: "/images/default-profile.png",
+
+      default: "/images/no-image.svg",
     },
 
     address: {
@@ -61,13 +63,11 @@ profilePicture: {
 
     phoneNumber: {
       type: String,
-      required: false,
-      unique: true,
-      sparse: true, 
+      unique: true, 
+      sparse: true,  
       validate: {
         validator(value) {
           if (!value) return true;
-
           return /^\+?[0-9]{7,15}$/.test(value);
         },
         message: (props) => `${props.value} is not a valid phone number`,
@@ -93,9 +93,5 @@ profilePicture: {
   }
 );
 
-userSchema.index({ email: 1 }, { unique: true });
-userSchema.index({ username: 1 }, { unique: true });
-userSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true });
 
-const User = mongoose.model("User", userSchema);
-module.exports = User;
+module.exports = mongoose.model("User", userSchema);
