@@ -1,3 +1,4 @@
+// models/userModel.js
 const mongoose = require("mongoose");
 const ROLES = require("../config/roles");
 
@@ -10,58 +11,69 @@ const userSchema = new mongoose.Schema(
       trim: true,
       minlength: 3,
       validate: {
-        validator: function (value) {
-          return /^[a-zA-Z0-9]{3,}$/.test(value);
+        validator(value) {
+          return /^[\p{L}\p{N}_-]{3,}$/u.test(value);
         },
         message: (props) => `${props.value} is not a valid username`,
       },
     },
+
     email: {
       type: String,
       required: true,
       unique: true,
       lowercase: true,
       validate: {
-        validator: function (value) {
+        validator(value) {
           return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
         },
         message: (props) => `${props.value} is not a valid email`,
       },
     },
+
     password: {
       type: String,
       required: true,
+
     },
+
     role: {
       type: String,
       enum: Object.values(ROLES),
       default: ROLES.USER,
     },
+
     isActive: {
       type: Boolean,
       default: true,
     },
-    profilePicture: {
+profilePicture: {
       type: String,
-      default: "defaultProfilePic.png",
+      default: "/images/default-profile.png",
     },
+
     address: {
       street: { type: String },
       city: { type: String },
       postalCode: { type: String },
       country: { type: String },
     },
+
     phoneNumber: {
       type: String,
       required: false,
       unique: true,
+      sparse: true, 
       validate: {
-        validator: function (value) {
-          return /^[0-9]{10}$/.test(value);
+        validator(value) {
+          if (!value) return true;
+
+          return /^\+?[0-9]{7,15}$/.test(value);
         },
         message: (props) => `${props.value} is not a valid phone number`,
       },
     },
+
     orders: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -69,9 +81,21 @@ const userSchema = new mongoose.Schema(
       },
     ],
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: {
+      transform(_doc, ret) {
+        delete ret.password;
+        delete ret.__v;
+        return ret;
+      },
+    },
+  }
 );
 
-const User = mongoose.model("User", userSchema);
+userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ username: 1 }, { unique: true });
+userSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true });
 
+const User = mongoose.model("User", userSchema);
 module.exports = User;
