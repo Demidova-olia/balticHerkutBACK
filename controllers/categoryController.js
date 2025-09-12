@@ -1,4 +1,3 @@
-// controllers/categoryController.js
 const mongoose = require("mongoose");
 const Category = require("../models/categoryModel");
 const Subcategory = require("../models/subcategoryModel");
@@ -10,6 +9,57 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
+/** Универсальная нормализация локализованного поля из body */
+function normalizeLocalizedFromBody(body, fieldName) {
+  const raw = body?.[fieldName];
+
+  const fallback = (s) => ({
+    ru: s,
+    en: s,
+    fi: s,
+    _source: /[А-Яа-яЁё]/.test(s) ? "ru" : "en",
+  });
+
+  // 1) пришёл объект { ru, en, fi }
+  if (raw && typeof raw === "object") {
+    const src =
+      typeof raw._source === "string" && ["ru", "en", "fi"].includes(raw._source)
+        ? raw._source
+        : (raw.en && "en") || (raw.ru && "ru") || (raw.fi && "fi") || "en";
+    const base = raw[src] || "";
+    return {
+      ru: raw.ru || base,
+      en: raw.en || base,
+      fi: raw.fi || base,
+      _source: src,
+    };
+  }
+
+  // 2) пришли nameRu/nameEn/nameFi
+  const ru = body?.[`${fieldName}Ru`];
+  const en = body?.[`${fieldName}En`];
+  const fi = body?.[`${fieldName}Fi`];
+  if (ru || en || fi) {
+    const src = en ? "en" : ru ? "ru" : fi ? "fi" : "en";
+    const base = (src === "en" ? en : src === "ru" ? ru : fi) || "";
+    return {
+      ru: ru || base,
+      en: en || base,
+      fi: fi || base,
+      _source: src,
+    };
+  }
+
+  // 3) пришла строка -> во все языки
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    return fallback(s);
+  }
+
+  // 4) ничего не пришло — вернуть undefined (чтобы не затирать)
+  return undefined;
+}
+
 /* =========================
  * CREATE
  * =======================*/
@@ -19,8 +69,13 @@ const createCategory = async (req, res) => {
   }
 
   try {
-    const { name, description, ...rest } = req.body || {};
-    if (!name || String(name).trim().length < 2) {
+    const { image, ...rest } = req.body || {};
+
+    // нормализуем локализованные поля
+    const nameLoc = normalizeLocalizedFromBody(req.body, "name");
+    const descLoc = normalizeLocalizedFromBody(req.body, "description");
+
+    if (!nameLoc || !nameLoc.en?.trim()) {
       return res
         .status(400)
         .json({ message: "Name is required and must be at least 2 characters" });
@@ -28,8 +83,9 @@ const createCategory = async (req, res) => {
 
     const doc = new Category({
       ...rest,
-      name: await buildLocalizedField(String(name).trim()),
-      description: description ? await buildLocalizedField(String(description).trim()) : undefined,
+      image: image || "/images/category.jpg",
+      name: nameLoc,                       // локализованный объект
+      description: descLoc || {},          // локализованный или пустой
     });
 
     await doc.save();
@@ -61,14 +117,12 @@ const getCategories = async (req, res) => {
       categories.map(async (cat) => {
         const subs = await Subcategory.find({ parent: cat._id }).lean();
 
-        // Локализация самой категории
         const catOut = { ...cat };
         catOut.name_i18n = catOut.name;
         catOut.description_i18n = catOut.description;
         catOut.name = pickLocalized(catOut.name, want);
         catOut.description = pickLocalized(catOut.description, want);
 
-        // Локализация подкатегорий
         catOut.subcategories = subs.map((s) => {
           const sOut = { ...s };
           sOut.name_i18n = sOut.name;
@@ -103,23 +157,40 @@ const updateCategory = async (req, res) => {
       return res.status(400).json({ message: "Invalid category id" });
     }
 
-    const { name, description, ...rest } = req.body || {};
     const cat = await Category.findById(id);
     if (!cat) return res.status(404).json({ message: "Category not found" });
 
-    // Обновляем обычные поля
+    // обновим обычные поля (кроме локализованных)
+    const { name, description, nameRu, nameEn, nameFi, descriptionRu, descriptionEn, descriptionFi, ...rest } = req.body || {};
     Object.assign(cat, rest);
 
-    // Обновляем i18n-поля
-    if (typeof name !== "undefined") {
-      if (String(name).trim().length < 2) {
-        return res.status(400).json({ message: "Name must be at least 2 characters" });
-      }
-      cat.name = await updateLocalizedField(cat.name, String(name).trim());
+    // локализованные поля: принимаем string / object / nameRu|nameEn|nameFi
+    const nameLoc = normalizeLocalizedFromBody(
+      { name, nameRu, nameEn, nameFi },
+      "name"
+    );
+    const descLoc = normalizeLocalizedFromBody(
+      { description, descriptionRu, descriptionEn, descriptionFi },
+      "description"
+    );
+
+    if (typeof nameLoc !== "undefined") {
+      // аккуратно мерджим, чтобы не потерять существующие значения, если пришло пустое
+      cat.name = {
+        ru: nameLoc.ru || cat.name?.ru || "",
+        en: nameLoc.en || cat.name?.en || "",
+        fi: nameLoc.fi || cat.name?.fi || "",
+        _source: nameLoc._source || cat.name?._source || "en",
+      };
     }
-    if (typeof description !== "undefined") {
-      const val = String(description || "").trim();
-      cat.description = val ? await updateLocalizedField(cat.description, val) : undefined;
+
+    if (typeof descLoc !== "undefined") {
+      cat.description = {
+        ru: (descLoc.ru ?? cat.description?.ru) || "",
+        en: (descLoc.en ?? cat.description?.en) || "",
+        fi: (descLoc.fi ?? cat.description?.fi) || "",
+        _source: descLoc._source || cat.description?._source || "en",
+      };
     }
 
     await cat.save();
@@ -154,9 +225,6 @@ const deleteCategory = async (req, res) => {
 
     const category = await Category.findByIdAndDelete(id);
     if (!category) return res.status(404).json({ message: "Category not found" });
-
-    // При желании можно также удалить связанные подкатегории:
-    // await Subcategory.deleteMany({ parent: id });
 
     return res.json({ message: "Category deleted", categoryId: id });
   } catch (err) {

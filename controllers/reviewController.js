@@ -2,27 +2,57 @@
 const mongoose = require("mongoose");
 const Review = require("../models/reviewModel");
 const Product = require("../models/productModel");
-
 const { pickLangFromReq, pickLocalized } = require("../utils/translator");
 
-// Нормализуем "комментарий" для ответа: если это i18n-объект — локализуем, если строка — отдаём как есть.
-const normalizeCommentForResponse = (rawComment, req) => {
-  try {
-    // если объект вида {ru,en,fi,_source}
-    if (rawComment && typeof rawComment === "object") {
-      const want = pickLangFromReq(req);
-      return pickLocalized(rawComment, want);
-    }
-    // строка или пусто
-    return rawComment || "";
-  } catch {
-    return typeof rawComment === "string" ? rawComment : "";
+function normalizeLocalizedFromBody(body, fieldName) {
+  const raw = body?.[fieldName];
+
+  if (raw && typeof raw === "object") {
+    const src =
+      typeof raw._source === "string" && ["ru", "en", "fi"].includes(raw._source)
+        ? raw._source
+        : (raw.en && "en") || (raw.ru && "ru") || (raw.fi && "fi") || "en";
+    const base = raw[src] || "";
+    return {
+      ru: raw.ru || base,
+      en: raw.en || base,
+      fi: raw.fi || base,
+      _source: src,
+    };
   }
-};
+
+  const ru = body?.[`${fieldName}Ru`];
+  const en = body?.[`${fieldName}En`];
+  const fi = body?.[`${fieldName}Fi`];
+  if (ru || en || fi) {
+    const src = en ? "en" : ru ? "ru" : fi ? "fi" : "en";
+    const base = (src === "en" ? en : src === "ru" ? ru : fi) || "";
+    return {
+      ru: ru || base,
+      en: en || base,
+      fi: fi || base,
+      _source: src,
+    };
+  }
+
+
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    const _source = /[А-Яа-яЁё]/.test(s) ? "ru" : "en";
+    return { ru: s, en: s, fi: s, _source };
+  }
+
+  return undefined;
+}
+
+function localizedCommentForResponse(i18nComment, req) {
+  const want = pickLangFromReq(req);
+  return pickLocalized(i18nComment || {}, want) || "";
+}
 
 const createReview = async (req, res) => {
   try {
-    const { rating, comment } = req.body;
+    const { rating } = req.body;
     const productId = req.params.id;
 
     if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
@@ -34,35 +64,37 @@ const createReview = async (req, res) => {
       return res.status(400).json({ message: "Rating must be between 1 and 5" });
     }
 
-    const existingReview = await Review.findOne({
+    const exists = await Review.findOne({
       userId: req.user._id,
       productId,
     });
-    if (existingReview) {
+    if (exists) {
       return res.status(400).json({ message: "You have already reviewed this product" });
     }
 
-    // Пишем комментарий как есть (строка или объект) — зависит от схемы.
+    const commentLoc = normalizeLocalizedFromBody(req.body, "comment") || { en: "", ru: "", fi: "", _source: "en" };
+
     const review = new Review({
       userId: req.user._id,
       productId,
       rating: r,
-      comment: typeof comment === "string" ? comment.trim() : comment,
+      comment: commentLoc,
     });
 
     await review.save();
 
-    // Пересчет среднего
-    const all = await Review.find({ productId }).select("rating").lean();
-    const avg = all.length
-      ? Math.round((all.reduce((acc, x) => acc + Number(x.rating || 0), 0) / all.length) * 10) / 10
-      : 0;
 
-    await Product.findByIdAndUpdate(productId, { averageRating: avg }, { new: false });
+    const agg = await Review.aggregate([
+      { $match: { productId: new mongoose.Types.ObjectId(productId) } },
+      { $group: { _id: null, avg: { $avg: "$rating" } } },
+    ]);
 
-    // Готовим ответ
+    const avg = agg.length ? Math.round(agg[0].avg * 10) / 10 : 0;
+    await Product.findByIdAndUpdate(productId, { averageRating: avg });
+
     const out = review.toObject();
-    out.comment = normalizeCommentForResponse(out.comment, req);
+    out.comment_i18n = out.comment;
+    out.comment = localizedCommentForResponse(out.comment, req);
 
     return res.status(201).json(out);
   } catch (error) {
@@ -88,8 +120,7 @@ const updateReview = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const { rating, comment } = req.body || {};
-
+    const { rating } = req.body;
     if (typeof rating !== "undefined") {
       const r = Number(rating);
       if (!Number.isFinite(r) || r < 1 || r > 5) {
@@ -98,14 +129,16 @@ const updateReview = async (req, res) => {
       review.rating = r;
     }
 
-    if (typeof comment !== "undefined") {
-      review.comment = typeof comment === "string" ? comment.trim() : comment;
+    const commentLoc = normalizeLocalizedFromBody(req.body, "comment");
+    if (typeof commentLoc !== "undefined") {
+      review.comment = commentLoc; 
     }
 
     await review.save();
 
     const out = review.toObject();
-    out.comment = normalizeCommentForResponse(out.comment, req);
+    out.comment_i18n = out.comment;
+    out.comment = localizedCommentForResponse(out.comment, req);
 
     return res.json({ message: "Review updated", review: out });
   } catch (error) {
@@ -144,13 +177,14 @@ const getProductReviews = async (req, res) => {
     }
 
     const reviews = await Review.find({ productId })
-      .populate("userId", "username email") // было 'name' — заменил на корректные поля
+      .populate("userId", "username email")
       .sort({ createdAt: -1 })
       .lean();
 
     const out = reviews.map((r) => ({
       ...r,
-      comment: normalizeCommentForResponse(r.comment, req),
+      comment_i18n: r.comment,
+      comment: localizedCommentForResponse(r.comment, req),
     }));
 
     return res.json(out);
@@ -173,7 +207,8 @@ const getOneReview = async (req, res) => {
 
     if (!review) return res.status(404).json({ message: "Review not found" });
 
-    review.comment = normalizeCommentForResponse(review.comment, req);
+    review.comment_i18n = review.comment;
+    review.comment = localizedCommentForResponse(review.comment, req);
 
     return res.json(review);
   } catch (error) {
