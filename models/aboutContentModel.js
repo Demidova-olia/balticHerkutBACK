@@ -1,26 +1,30 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const AboutContentSchema = new mongoose.Schema({
-  heroImageUrl: String,
-  heading: { type: String, default: 'About Us' },
-  subheading: { type: String, default: '' },
+const Localized = mongoose.Schema.Types.Mixed;
 
-  store: {
-    title: { type: String, default: 'Our Store' },
-    description: { type: String, default: '' },
-    address: { type: String, default: '' },
-    hours:   { type: String, default: '' },
-    mapUrl:  { type: String, default: '' },
-    imageUrl: String,
+const AboutContentSchema = new mongoose.Schema(
+  {
+    heroImageUrl: { type: String, default: "" },
+    storeImageUrl: { type: String, default: "" },
+    requisitesImageUrl: { type: String, default: "" },
+
+    title: { type: Localized, default: "" },
+    subtitle: { type: Localized, default: "" },
+    descriptionIntro: { type: Localized, default: "" },
+    descriptionMore: { type: Localized, default: "" },
+    address: { type: Localized, default: "" },
+    hours: { type: Localized, default: "" },
+    reasonsTitle: { type: Localized, default: "" },
+    requisitesTitle: { type: Localized, default: "" },
+    socialsHandle: { type: Localized, default: "" },
+
+    gmapsUrl: { type: String, default: "" },
+
+    reasons: { type: [Localized], default: [] },
+
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
+  { timestamps: true, versionKey: false }
+);
 
-  reasonsTitle: { type: String, default: 'Why Baltic Herkut?' },
-  reasons: { type: [String], default: [] },
-
-  requisitesTitle: { type: String, default: 'Requisites' },
-  requisitesImageUrl: String,
-
-  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-}, { timestamps: true });
-
-module.exports = mongoose.model('AboutContentModel', AboutContentSchema);
+module.exports = mongoose.model("AboutContent", AboutContentSchema);
