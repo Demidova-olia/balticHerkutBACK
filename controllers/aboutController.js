@@ -1,8 +1,7 @@
-// controllers/aboutController.js
 const cloudinary = require("cloudinary").v2;
-const AboutContent = require("../models/aboutContentModel");
+const AboutContent = require("../models/aboutContent");
 
-// ====== helpers for uploads ===================================================
+/** -------- helpers (новые) -------- */
 const uploadFromBuffer = (buffer, folder = "about") =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -12,225 +11,168 @@ const uploadFromBuffer = (buffer, folder = "about") =>
     stream.end(buffer);
   });
 
-// ====== helpers for i18n ======================================================
-const isLocalizedObject = (v) =>
-  v && typeof v === "object" && ("ru" in v || "en" in v || "fi" in v);
+const parseMaybeJSON = (v) => {
+  if (typeof v !== "string") return v;
+  try { return JSON.parse(v); } catch { return v; }
+};
 
-/**
- * mergeLocalized:
- * - value строка + lang -> обновляем только этот язык, остальные сохраняем
- * - value i18n-объект -> аккуратно сливаем по ключам ru/en/fi
- * - value пусто -> ничего не меняем
- */
-function mergeLocalized(prevValue, value, lang) {
-  if (typeof value === "undefined" || value === null) return prevValue;
+const coerceAboutBody = (raw) => {
+  const b = { ...raw };
 
-  // пришла строка
-  if (typeof value === "string") {
-    if (!lang) return value; // если язык не указан — храним как строку
-    const base = isLocalizedObject(prevValue) ? { ...prevValue } : {};
-    base[lang] = value;
-    return base;
+  // поля, которые могут приходить JSON-строкой (локализованные объекты)
+  for (const k of [
+    "title","subtitle","descriptionIntro","descriptionMore",
+    "address","hours","socialsHandle","reasonsTitle","requisitesTitle"
+  ]) {
+    if (typeof b[k] === "string") b[k] = parseMaybeJSON(b[k]);
   }
 
-  // пришел объект {ru,en,fi}
-  if (isLocalizedObject(value)) {
-    const base = isLocalizedObject(prevValue) ? { ...prevValue } : {};
-    if ("ru" in value) base.ru = value.ru;
-    if ("en" in value) base.en = value.en;
-    if ("fi" in value) base.fi = value.fi;
-    return base;
+  // reasons может прийти строкой JSON / одиночной строкой / объектом с индексами
+  if (typeof b.reasons === "string") {
+    const parsed = parseMaybeJSON(b.reasons);
+    if (Array.isArray(parsed)) b.reasons = parsed;
+    else if (b.reasons.trim()) b.reasons = [b.reasons.trim()];
+    else b.reasons = [];
+  }
+  if (!Array.isArray(b.reasons) && b.reasons && typeof b.reasons === "object") {
+    b.reasons = Object.keys(b.reasons)
+      .sort((a, z) => Number(a) - Number(z))
+      .map((k) => b.reasons[k]);
   }
 
-  // иначе просто вернуть как есть
-  return value;
-}
+  return b;
+};
 
-/**
- * mergeLocalizedArray:
- * - массив строк + lang  -> каждый элемент трактуем как перевод для lang
- * - массив i18n-объектов -> заменяем целиком
- */
-function mergeLocalizedArray(prevArr, value, lang) {
-  if (!Array.isArray(value)) return prevArr;
-  const prev = Array.isArray(prevArr) ? prevArr : [];
-
-  // массив строк -> мапим по индексам, мерджим по lang
-  if (value.every((v) => typeof v === "string")) {
-    if (!lang) return value;
-    const merged = value.map((val, idx) => mergeLocalized(prev[idx], val, lang));
-    return merged;
-  }
-
-  // массив i18n объектов -> заменяем
-  if (value.every(isLocalizedObject)) {
-    return value;
-  }
-
-  return prev;
-}
-
-// Список локализованных полей (плоская схема)
-const TEXT_FIELDS = [
-  "title",
-  "subtitle",
-  "descriptionIntro",
-  "descriptionMore",
-  "address",
-  "hours",
-  "reasonsTitle",
-  "requisitesTitle",
-  "socialsHandle",
-];
-
-// ====== GET /about ============================================================
-exports.getAbout = async (req, res) => {
+const tryUpload = async (file, folder) => {
   try {
-    let doc = await AboutContent.findOne().lean();
+    if (!file?.buffer) return null;
+    const up = await uploadFromBuffer(file.buffer, folder);
+    return up.secure_url;
+  } catch (e) {
+    console.error("Cloudinary upload failed:", e?.message || e);
+    return null; // не блокируем сохранение текста
+  }
+};
+
+const updateLocalized = (doc, key, value, lang) => {
+  if (value == null) return;
+  const cur = doc[key] || {};
+  if (value && typeof value === "object") {
+    doc[key] = { ...cur, ...value };
+  } else {
+    const v = String(value).trim();
+    if (!v) return; // не затираем существующее пустым
+    doc[key] = { ...cur, [lang]: v, _source: lang };
+  }
+};
+/** -------- /helpers -------- */
+
+exports.getAbout = async (_req, res) => {
+  try {
+    let doc = await AboutContent.findOne();
     if (!doc) {
-      doc = await (await AboutContent.create({})).toObject();
+      doc = await AboutContent.create({
+        heroImageUrl: "/assets/Logo.jpg",
+        storeImageUrl: "/assets/storefront.jpg",
+        requisitesImageUrl: "/assets/banner_margins.jpg",
+
+        title: { en: "About Us", _source: "en" },
+        subtitle: {
+          en: "Baltic Herkut — your favorite Baltic foods in Oulu.",
+          _source: "en",
+        },
+
+        descriptionIntro: {
+          en: "We bring fresh and trusted products from the Baltic region: dairy and meat products, fish, preserves, sweets, beverages and more.",
+          _source: "en",
+        },
+        descriptionMore: {
+          en: "We work daily to keep fair prices and friendly service. You're always welcome to discover new flavors!",
+          _source: "en",
+        },
+
+        address: { en: "Limingantie 9, Oulu", _source: "en" },
+        hours: {
+          en: "Mon–Fri 12:00–19:00, Sat 12:00–17:00, Sun 12:00–16:00",
+          _source: "en",
+        },
+        gmapsUrl: "https://maps.google.com/?q=Limingantie+9,+Oulu",
+
+        socialsHandle: { en: "@balticherkut", _source: "en" },
+
+        reasonsTitle: { en: "Why Baltic Herkut?", _source: "en" },
+        requisitesTitle: { en: "Requisites", _source: "en" },
+
+        reasons: [
+          { en: "Reliable suppliers and stable quality", _source: "en" },
+          { en: "Regularly updated assortment", _source: "en" },
+          { en: "Friendly staff and help with selection", _source: "en" },
+        ],
+      });
     }
-
-    // Если нужно вернуть «разрешённые» строки под язык
-    const resolve = String(req.query.resolve || "0") === "1";
-    if (!resolve) {
-      return res.status(200).json({ message: "About loaded", data: doc });
-    }
-
-    const lang =
-      (req.query.lang ||
-        req.headers["accept-language"] ||
-        "en").toString().slice(0, 2);
-
-    // функция разрешения одного поля
-    const R = (v) => {
-      if (v == null) return v;
-      if (typeof v === "string") return v;
-      if (isLocalizedObject(v)) return v[lang] || v.en || v.ru || v.fi || "";
-      return v;
-    };
-
-    const resolved = {
-      // не локализованные
-      heroImageUrl: doc.heroImageUrl || doc.heroImageURL || "",
-      storeImageUrl: doc.storeImageUrl || doc.store?.imageUrl || "",
-      requisitesImageUrl: doc.requisitesImageUrl || "",
-      gmapsUrl: doc.gmapsUrl || doc.store?.mapUrl || "",
-
-      // локализованные
-      title: R(doc.title || doc.heading),
-      subtitle: R(doc.subtitle || doc.subheading),
-      descriptionIntro: R(doc.descriptionIntro || doc.store?.description),
-      descriptionMore: R(doc.descriptionMore),
-      address: R(doc.address || doc.store?.address),
-      hours: R(doc.hours || doc.store?.hours),
-      reasonsTitle: R(doc.reasonsTitle),
-      requisitesTitle: R(doc.requisitesTitle || "Requisites"),
-      socialsHandle: R(doc.socialsHandle),
-
-      reasons: Array.isArray(doc.reasons) ? doc.reasons.map(R) : [],
-      updatedAt: doc.updatedAt,
-    };
-
-    return res.status(200).json({ message: "About loaded", data: resolved });
+    res.status(200).json({ message: "About loaded", data: doc });
   } catch (err) {
     console.error("getAbout error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// ====== PUT /about ============================================================
 exports.updateAbout = async (req, res) => {
   try {
-    // --- тело запроса (JSON или multipart/form-data c payload) ---
+    const lang = String(req.headers["accept-language"] || "en").slice(0, 2);
+
     let body = {};
     if (req.is("application/json")) {
       body = req.body || {};
     } else if (req.body?.payload) {
-      try {
-        body = JSON.parse(req.body.payload);
-      } catch {
-        return res.status(400).json({ message: "Invalid payload JSON" });
-      }
+      body = JSON.parse(req.body.payload);
     } else {
-      body = req.body || {};
+      body = coerceAboutBody(req.body || {}); // ← ВАЖНО: коэрция multipart-тела
     }
-
-    // язык, в который записывать строки (если пришли строки)
-    const lang =
-      (body.lang || req.query.lang || req.headers["accept-language"] || "")
-        .toString()
-        .slice(0, 2);
 
     let doc = await AboutContent.findOne();
     if (!doc) doc = new AboutContent({});
 
-    // --- файлы (cloudinary) ---
-    if (req.files?.heroImage?.[0]?.buffer) {
-      const up = await uploadFromBuffer(
-        req.files.heroImage[0].buffer,
-        "about/hero"
+    // безопасные загрузки — не валят весь апдейт
+    const heroUrl = await tryUpload(req.files?.heroImage?.[0], "about/hero");
+    const storeUrl = await tryUpload(req.files?.storeImage?.[0], "about/store");
+    const reqsUrl  = await tryUpload(req.files?.requisitesImage?.[0], "about/requisites");
+
+    if (heroUrl) body.heroImageUrl = heroUrl;
+    if (storeUrl) body.storeImageUrl = storeUrl;
+    if (reqsUrl)  body.requisitesImageUrl = reqsUrl;
+
+    if (typeof body.heroImageUrl !== "undefined") doc.heroImageUrl = body.heroImageUrl;
+    if (typeof body.storeImageUrl !== "undefined") doc.storeImageUrl = body.storeImageUrl;
+    if (typeof body.requisitesImageUrl !== "undefined") doc.requisitesImageUrl = body.requisitesImageUrl;
+    if (typeof body.gmapsUrl !== "undefined") doc.gmapsUrl = body.gmapsUrl;
+
+    for (const k of [
+      "title","subtitle","descriptionIntro","descriptionMore",
+      "address","hours","socialsHandle","reasonsTitle","requisitesTitle"
+    ]) {
+      if (typeof body[k] !== "undefined") updateLocalized(doc, k, body[k], lang);
+    }
+
+    if (Array.isArray(body.reasons)) {
+      doc.reasons = body.reasons.map((r) =>
+        r && typeof r === "object"
+          ? r
+          : { [lang]: String(r || ""), _source: lang }
       );
-      doc.heroImageUrl = up.secure_url;
-    }
-    if (req.files?.storeImage?.[0]?.buffer) {
-      const up = await uploadFromBuffer(
-        req.files.storeImage[0].buffer,
-        "about/store"
-      );
-      doc.storeImageUrl = up.secure_url;
-    }
-    if (req.files?.requisitesImage?.[0]?.buffer) {
-      const up = await uploadFromBuffer(
-        req.files.requisitesImage[0].buffer,
-        "about/requisites"
-      );
-      doc.requisitesImageUrl = up.secure_url;
     }
 
-    // --- обратная совместимость с «старой» схемой (store/heading/...) ---
-    if (typeof body.heading !== "undefined") body.title = body.heading;
-    if (typeof body.subheading !== "undefined") body.subtitle = body.subheading;
-    if (body.store && typeof body.store === "object") {
-      if (typeof body.store.description !== "undefined")
-        body.descriptionIntro = body.store.description;
-      if (typeof body.store.address !== "undefined")
-        body.address = body.store.address;
-      if (typeof body.store.hours !== "undefined") body.hours = body.store.hours;
-      if (typeof body.store.mapUrl !== "undefined")
-        body.gmapsUrl = body.store.mapUrl;
-      if (typeof body.store.imageUrl !== "undefined")
-        body.storeImageUrl = body.store.imageUrl;
-    }
-
-    // --- локализованные текстовые поля (мерджим) ---
-    TEXT_FIELDS.forEach((key) => {
-      if (key in body) {
-        doc[key] = mergeLocalized(doc[key], body[key], lang);
-      }
-    });
-
-    // --- reasons (список причин) ---
-    if ("reasons" in body) {
-      doc.reasons = mergeLocalizedArray(doc.reasons, body.reasons, lang);
-    }
-
-    // --- нeлокализованные строки ---
-    if ("gmapsUrl" in body) doc.gmapsUrl = body.gmapsUrl;
-    if ("heroImageUrl" in body) doc.heroImageUrl = body.heroImageUrl;
-    if ("storeImageUrl" in body) doc.storeImageUrl = body.storeImageUrl;
-    if ("requisitesImageUrl" in body)
-      doc.requisitesImageUrl = body.requisitesImageUrl;
-
-    if (req.user?._id) {
-      doc.updatedBy = req.user._id;
-    }
+    if (req.user?._id) doc.updatedBy = req.user._id;
 
     await doc.save();
-
     res.status(200).json({ message: "About updated", data: doc });
   } catch (err) {
-    console.error("updateAbout error:", err);
-    res.status(500).json({ message: "Server error" });
+    console.error("updateAbout error:", {
+      name: err.name,
+      message: err.message,
+      errors: err.errors,
+      stack: err.stack,
+    });
+    res.status(500).json({ message: err.message || "Server error" });
   }
 };
