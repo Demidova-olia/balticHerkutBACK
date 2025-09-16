@@ -1,7 +1,7 @@
 const cloudinary = require("cloudinary").v2;
 const AboutContent = require("../models/aboutContent");
 
-/** -------- helpers (новые) -------- */
+/** ===== Upload helpers ===== */
 const uploadFromBuffer = (buffer, folder = "about") =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -11,6 +11,18 @@ const uploadFromBuffer = (buffer, folder = "about") =>
     stream.end(buffer);
   });
 
+const tryUpload = async (file, folder) => {
+  try {
+    if (!file?.buffer) return null;
+    const up = await uploadFromBuffer(file.buffer, folder);
+    return up.secure_url;
+  } catch (e) {
+    console.error("Cloudinary upload failed:", e?.message || e);
+    return null;
+  }
+};
+
+/** ===== Body coercion (multipart/JSON) ===== */
 const parseMaybeJSON = (v) => {
   if (typeof v !== "string") return v;
   try { return JSON.parse(v); } catch { return v; }
@@ -18,16 +30,11 @@ const parseMaybeJSON = (v) => {
 
 const coerceAboutBody = (raw) => {
   const b = { ...raw };
-
-  // поля, которые могут приходить JSON-строкой (локализованные объекты)
   for (const k of [
     "title","subtitle","descriptionIntro","descriptionMore",
     "address","hours","socialsHandle","reasonsTitle","requisitesTitle"
-  ]) {
-    if (typeof b[k] === "string") b[k] = parseMaybeJSON(b[k]);
-  }
+  ]) if (typeof b[k] === "string") b[k] = parseMaybeJSON(b[k]);
 
-  // reasons может прийти строкой JSON / одиночной строкой / объектом с индексами
   if (typeof b.reasons === "string") {
     const parsed = parseMaybeJSON(b.reasons);
     if (Array.isArray(parsed)) b.reasons = parsed;
@@ -39,34 +46,41 @@ const coerceAboutBody = (raw) => {
       .sort((a, z) => Number(a) - Number(z))
       .map((k) => b.reasons[k]);
   }
-
   return b;
 };
 
-const tryUpload = async (file, folder) => {
-  try {
-    if (!file?.buffer) return null;
-    const up = await uploadFromBuffer(file.buffer, folder);
-    return up.secure_url;
-  } catch (e) {
-    console.error("Cloudinary upload failed:", e?.message || e);
-    return null; // не блокируем сохранение текста
+/** ===== Локализация: ЗЕРКАЛО ИЗ ТЕКУЩЕГО ЯЗЫКА ВО ВСЕ ===== */
+/* ВАЖНО: если прилетает объект {en|ru|fi}, берём:
+   incoming[lang] || incoming.en || incoming.ru || incoming.fi || prev[lang] || prev.en || prev.ru || prev.fi
+   → и зеркалим этот текст во все языки.
+*/
+function pickText(obj, lang, prev = {}) {
+  const candidates = [
+    obj?.[lang], obj?.en, obj?.ru, obj?.fi,
+    prev?.[lang], prev?.en, prev?.ru, prev?.fi,
+  ];
+  for (const v of candidates) {
+    if (typeof v === "string" && v.trim()) return v.trim();
   }
-};
+  return "";
+}
 
-const updateLocalized = (doc, key, value, lang) => {
-  if (value == null) return;
-  const cur = doc[key] || {};
-  if (value && typeof value === "object") {
-    doc[key] = { ...cur, ...value };
-  } else {
-    const v = String(value).trim();
-    if (!v) return; // не затираем существующее пустым
-    doc[key] = { ...cur, [lang]: v, _source: lang };
+function setLocalizedMirror(doc, key, incoming, lang) {
+  const prev = doc[key] || {};
+
+  if (incoming && typeof incoming === "object") {
+    const srcVal = pickText(incoming, lang, prev);
+    if (!srcVal) return;
+    doc[key] = { en: srcVal, ru: srcVal, fi: srcVal, _source: lang };
+    return;
   }
-};
-/** -------- /helpers -------- */
 
+  const value = String(incoming ?? "").trim();
+  if (!value) return;
+  doc[key] = { en: value, ru: value, fi: value, _source: lang };
+}
+
+/** ===== GET /about ===== */
 exports.getAbout = async (_req, res) => {
   try {
     let doc = await AboutContent.findOne();
@@ -117,49 +131,57 @@ exports.getAbout = async (_req, res) => {
   }
 };
 
+/** ===== PUT /about ===== */
 exports.updateAbout = async (req, res) => {
   try {
     const lang = String(req.headers["accept-language"] || "en").slice(0, 2);
 
     let body = {};
-    if (req.is("application/json")) {
-      body = req.body || {};
-    } else if (req.body?.payload) {
-      body = JSON.parse(req.body.payload);
-    } else {
-      body = coerceAboutBody(req.body || {}); // ← ВАЖНО: коэрция multipart-тела
-    }
+    if (req.is("application/json"))      body = req.body || {};
+    else if (req.body?.payload)          body = JSON.parse(req.body.payload);
+    else                                 body = coerceAboutBody(req.body || {});
 
     let doc = await AboutContent.findOne();
     if (!doc) doc = new AboutContent({});
 
-    // безопасные загрузки — не валят весь апдейт
-    const heroUrl = await tryUpload(req.files?.heroImage?.[0], "about/hero");
+    // загрузки файлов (если есть)
+    const heroUrl  = await tryUpload(req.files?.heroImage?.[0], "about/hero");
     const storeUrl = await tryUpload(req.files?.storeImage?.[0], "about/store");
     const reqsUrl  = await tryUpload(req.files?.requisitesImage?.[0], "about/requisites");
 
-    if (heroUrl) body.heroImageUrl = heroUrl;
+    if (heroUrl)  body.heroImageUrl = heroUrl;
     if (storeUrl) body.storeImageUrl = storeUrl;
     if (reqsUrl)  body.requisitesImageUrl = reqsUrl;
 
-    if (typeof body.heroImageUrl !== "undefined") doc.heroImageUrl = body.heroImageUrl;
-    if (typeof body.storeImageUrl !== "undefined") doc.storeImageUrl = body.storeImageUrl;
+    if (typeof body.heroImageUrl !== "undefined")       doc.heroImageUrl = body.heroImageUrl;
+    if (typeof body.storeImageUrl !== "undefined")      doc.storeImageUrl = body.storeImageUrl;
     if (typeof body.requisitesImageUrl !== "undefined") doc.requisitesImageUrl = body.requisitesImageUrl;
-    if (typeof body.gmapsUrl !== "undefined") doc.gmapsUrl = body.gmapsUrl;
+    if (typeof body.gmapsUrl !== "undefined")           doc.gmapsUrl = body.gmapsUrl;
 
-    for (const k of [
-      "title","subtitle","descriptionIntro","descriptionMore",
-      "address","hours","socialsHandle","reasonsTitle","requisitesTitle"
-    ]) {
-      if (typeof body[k] !== "undefined") updateLocalized(doc, k, body[k], lang);
-    }
+    // локализованные поля — зеркалим
+    if (typeof body.title !== "undefined")            setLocalizedMirror(doc, "title", body.title, lang);
+    if (typeof body.subtitle !== "undefined")         setLocalizedMirror(doc, "subtitle", body.subtitle, lang);
+    if (typeof body.descriptionIntro !== "undefined") setLocalizedMirror(doc, "descriptionIntro", body.descriptionIntro, lang);
+    if (typeof body.descriptionMore !== "undefined")  setLocalizedMirror(doc, "descriptionMore", body.descriptionMore, lang);
+    if (typeof body.address !== "undefined")          setLocalizedMirror(doc, "address", body.address, lang);
+    if (typeof body.hours !== "undefined")            setLocalizedMirror(doc, "hours", body.hours, lang);
+    if (typeof body.socialsHandle !== "undefined")    setLocalizedMirror(doc, "socialsHandle", body.socialsHandle, lang);
+    if (typeof body.reasonsTitle !== "undefined")     setLocalizedMirror(doc, "reasonsTitle", body.reasonsTitle, lang);
+    if (typeof body.requisitesTitle !== "undefined")  setLocalizedMirror(doc, "requisitesTitle", body.requisitesTitle, lang);
 
+    // reasons — текст активного языка (или любой имеющийся) везде
     if (Array.isArray(body.reasons)) {
-      doc.reasons = body.reasons.map((r) =>
-        r && typeof r === "object"
-          ? r
-          : { [lang]: String(r || ""), _source: lang }
-      );
+      const out = body.reasons.map((val, i) => {
+        let text = "";
+        if (val && typeof val === "object") {
+          text = pickText(val, lang);
+        } else {
+          text = String(val ?? "").trim();
+        }
+        if (!text) return (doc.reasons?.[i] || {});
+        return { en: text, ru: text, fi: text, _source: lang };
+      });
+      doc.reasons = out;
     }
 
     if (req.user?._id) doc.updatedBy = req.user._id;
