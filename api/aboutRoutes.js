@@ -1,4 +1,3 @@
-// api/aboutRoutes.js
 const express = require("express");
 const router = express.Router();
 
@@ -12,8 +11,8 @@ router.get("/", getAbout);
 
 router.put(
   "/",
-  authMiddleware,
-  rolesMiddleware(["admin"]), // теперь корректно обрабатывается и массив, и строка
+  authMiddleware,                 // только авторизованный
+  rolesMiddleware(["admin"]),     // только админ
   upload.fields([
     { name: "heroImage", maxCount: 1 },
     { name: "storeImage", maxCount: 1 },

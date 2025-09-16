@@ -14,7 +14,8 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
-];
+  process.env.FRONTEND_URL, 
+].filter(Boolean);
 
 const corsOptions = {
   origin(origin, cb) {
@@ -31,15 +32,15 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 app.use("/images", express.static(path.join(__dirname, "public", "images")));
 
+
 cloudinary.config({
-  cloud_name: "diw6ugcy3",
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "diw6ugcy3",
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
@@ -76,9 +77,7 @@ app.use((req, res, next) => {
 
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
-  if (globalErrorHandler) {
-    return globalErrorHandler(err, req, res, next);
-  }
+  if (globalErrorHandler) return globalErrorHandler(err, req, res, next);
   res.status(err.statusCode || 500).json({
     status: "error",
     message: err.message || "Internal Server Error",
