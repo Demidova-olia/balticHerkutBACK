@@ -24,11 +24,15 @@ const productSchema = new mongoose.Schema(
     stock: { type: Number, required: true, min: 0 },
 
     barcode: {
-      type: String,    
+      type: String,
       trim: true,
-      sparse: true,    
-      unique: true,   
-      match: [/^\d{8,14}$/, "Invalid barcode: expected 8–14 digits"], 
+
+      set: (v) => (v === '' ? undefined : v),
+
+      validate: {
+        validator: (v) => v == null || /^\d{8,14}$/.test(String(v)),
+        message: 'Invalid barcode: expected 8–14 digits',
+      },
     },
 
     averageRating: { type: Number, default: 0 },

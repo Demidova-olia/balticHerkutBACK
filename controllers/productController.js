@@ -23,6 +23,57 @@ function normalizeBarcode(raw) {
   return s;
 }
 
+/** ===== helpers for Cloudinary deletion (public_id из URL) ===== */
+function isCloudinaryUrl(url) {
+  return typeof url === "string" && /res\.cloudinary\.com\/.+\/image\/upload\//.test(url);
+}
+
+// Напр.: https://res.cloudinary.com/<cloud>/image/upload/v1725100000/products/folder/my_img_abcd.jpg
+// public_id -> "products/folder/my_img_abcd"
+function extractPublicIdFromUrl(url) {
+  if (!isCloudinaryUrl(url)) return null;
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split("/");
+    const uploadIdx = parts.indexOf("upload");
+    if (uploadIdx === -1) return null;
+    const tail = parts.slice(uploadIdx + 1);
+    const noVersion = tail[0] && /^v\d+$/.test(tail[0]) ? tail.slice(1) : tail;
+    if (!noVersion.length) return null;
+    const last = noVersion[noVersion.length - 1];
+    const withoutExt = last.replace(/\.[a-zA-Z0-9]+$/, "");
+    const publicIdParts = noVersion.slice(0, -1).concat(withoutExt);
+    return publicIdParts.join("/");
+  } catch {
+    return null;
+  }
+}
+
+function collectPublicIdsFromImages(images) {
+  const ids = [];
+  for (const img of Array.isArray(images) ? images : []) {
+    if (!img) continue;
+    if (typeof img === "string") {
+      const pid = extractPublicIdFromUrl(img);
+      if (pid) ids.push(pid);
+      continue;
+    }
+    if (img.public_id && typeof img.public_id === "string") {
+      ids.push(img.public_id);
+    } else if (img.url) {
+      const pid = extractPublicIdFromUrl(img.url);
+      if (pid) ids.push(pid);
+    }
+  }
+  // убрать заглушки
+  return ids.filter((pid) => pid && pid !== "default_local_image");
+}
+
+async function deleteCloudinaryResources(publicIds) {
+  if (!publicIds.length) return { deleted: {} };
+  return await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
+}
+
 /* =========================================================
  * CREATE
  * =======================================================*/
@@ -40,7 +91,7 @@ const createProduct = async (req, res) => {
       discount,
       isFeatured,
       isActive,
-      barcode, // <— NEW
+      barcode,
     } = body;
 
     if (!name || String(name).trim().length < 3) {
@@ -98,7 +149,6 @@ const createProduct = async (req, res) => {
     if (bc === null) {
       return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
     }
-    // необязательно, но даёт более дружелюбную ошибку, чем E11000
     if (bc) {
       const exists = await Product.exists({ barcode: bc });
       if (exists) {
@@ -154,7 +204,6 @@ const createProduct = async (req, res) => {
 
     res.status(201).json({ message: "Product created", data });
   } catch (err) {
-    // дружелюбная обработка E11000 (дубликат barcode)
     if (err && err.code === 11000 && err.keyPattern && err.keyPattern.barcode) {
       return res.status(409).json({ message: "Barcode already exists" });
     }
@@ -182,7 +231,6 @@ const getProducts = async (req, res) => {
         { "description.en": regex },
         { "description.fi": regex },
       ];
-      // если строка похожа на штрихкод — ищем и по barcode
       if (BARCODE_RE.test(s)) {
         or.push({ barcode: s });
       }
@@ -393,11 +441,9 @@ const updateProduct = async (req, res) => {
       if (bc === null) {
         return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
       }
-      // если прислали пустую строку — очищаем поле
       if (!bc) {
         product.barcode = undefined;
       } else {
-        // проверим дубликаты у других товаров
         const duplicate = await Product.findOne({ _id: { $ne: product._id }, barcode: bc }).lean();
         if (duplicate) {
           return res.status(409).json({ message: "Barcode already exists" });
@@ -450,7 +496,10 @@ const updateProduct = async (req, res) => {
     let newImages = [];
     if (files.length) {
       const uploadResults = await Promise.all(files.map((f) => uploadFromBuffer(f.buffer)));
-      newImages = uploadResults.map((r) => ({ url: r.secure_url, public_id: r.public_id }));
+      newImages = uploadResults.map((r) => ({
+        url: r.secure_url || r.url,
+        public_id: r.public_id,
+      }));
     }
     if (newImages.length) {
       product.images = (product.images || []).concat(newImages);
@@ -521,9 +570,143 @@ const searchProducts = async (req, res) => {
   }
 };
 
-const deleteProduct = async (req, res) => {};
-const deleteProductImage = async (req, res) => {};
-const updateProductImage = async (req, res) => {};
+/* =========================================================
+ * DELETE PRODUCT
+ * =======================================================*/
+const deleteProduct = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+
+    const product = await Product.findById(id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    const publicIds = collectPublicIdsFromImages(product.images);
+    if (publicIds.length) {
+      try {
+        const result = await deleteCloudinaryResources(publicIds);
+        console.log("[deleteProduct] cloudinary delete_resources:", result);
+      } catch (e) {
+        console.warn("[deleteProduct] cloudinary delete_resources failed:", e?.message || e);
+      }
+    } else {
+      console.log("[deleteProduct] no cloudinary public_ids to delete");
+    }
+
+    await Product.findByIdAndDelete(id);
+
+    return res.status(200).json({
+      message: "Product deleted",
+      data: { _id: id },
+    });
+  } catch (error) {
+    console.error("Error in deleteProduct:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * DELETE SINGLE IMAGE (по public_id)
+ * =======================================================*/
+const deleteProductImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rawPublicId = decodeURIComponent(req.params.publicId || "");
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    if (!rawPublicId) {
+      return res.status(400).json({ message: "publicId is required" });
+    }
+
+    const product = await Product.findById(id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    // cloudinary destroy
+    try {
+      if (rawPublicId !== "default_local_image") {
+        const resDel = await cloudinary.uploader.destroy(rawPublicId);
+        console.log("[deleteProductImage] cloudinary.destroy:", rawPublicId, resDel);
+      }
+    } catch (e) {
+      console.warn("[deleteProductImage] cloudinary destroy failed:", rawPublicId, e?.message);
+    }
+
+    product.images = (product.images || []).filter((img) => {
+      if (!img) return false;
+      if (typeof img === "string") {
+        const fromUrl = extractPublicIdFromUrl(img);
+        return fromUrl !== rawPublicId;
+      }
+      return img.public_id !== rawPublicId;
+    });
+    await product.save();
+
+    return res.status(200).json({
+      message: "Image deleted",
+      data: { _id: id, public_id: rawPublicId },
+    });
+  } catch (error) {
+    console.error("Error in deleteProductImage:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * UPDATE SINGLE IMAGE 
+ * =======================================================*/
+const updateProductImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const oldPid = decodeURIComponent(req.params.publicId || "");
+    const file = req.file;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    if (!file) {
+      return res.status(400).json({ message: "Image file is required" });
+    }
+
+    const product = await Product.findById(id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+  
+    const uploaded = await uploadToCloudinary(file.buffer, file.originalname);
+    const newUrl = uploaded.secure_url || uploaded.url;
+    const newPid = uploaded.public_id;
+
+    if (oldPid && oldPid !== "default_local_image") {
+      try {
+        const resDel = await cloudinary.uploader.destroy(oldPid);
+        console.log("[updateProductImage] cloudinary.destroy:", oldPid, resDel);
+      } catch (e) {
+        console.warn("[updateProductImage] cloudinary destroy failed:", oldPid, e?.message);
+      }
+    }
+
+    product.images = (product.images || []).map((img) => {
+      if (typeof img === "string") {
+        const fromUrl = extractPublicIdFromUrl(img);
+        return fromUrl === oldPid ? { url: newUrl, public_id: newPid } : img;
+      }
+      return img.public_id === oldPid ? { url: newUrl, public_id: newPid } : img;
+    });
+
+    await product.save();
+
+    return res.status(200).json({
+      message: "Image updated",
+      data: { _id: id, public_id: newPid, url: newUrl },
+    });
+  } catch (error) {
+    console.error("Error in updateProductImage:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
 
 module.exports = {
   createProduct,
@@ -533,7 +716,7 @@ module.exports = {
   getProductsByCategoryAndSubcategory,
   updateProduct,
   searchProducts,
-  deleteProduct,
-  deleteProductImage,
-  updateProductImage,
+  deleteProduct,        
+  deleteProductImage,   
+  updateProductImage,   
 };
