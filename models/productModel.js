@@ -6,7 +6,7 @@ const LocalizedStringSchema = new mongoose.Schema(
     en: { type: String, default: "" },
     fi: { type: String, default: "" },
     _source: { type: String, enum: ["ru", "en", "fi"], default: "en" },
-    _mt: { type: Map, of: Boolean, default: {} }, 
+    _mt: { type: Map, of: Boolean, default: {} },
   },
   { _id: false }
 );
@@ -22,6 +22,14 @@ const productSchema = new mongoose.Schema(
     subcategory: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcategory' },
 
     stock: { type: Number, required: true, min: 0 },
+
+    barcode: {
+      type: String,    
+      trim: true,
+      sparse: true,    
+      unique: true,   
+      match: [/^\d{8,14}$/, "Invalid barcode: expected 8–14 digits"], 
+    },
 
     averageRating: { type: Number, default: 0 },
 
@@ -42,6 +50,8 @@ const productSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+productSchema.index({ barcode: 1 }, { unique: true, sparse: true });
 
 const Product = mongoose.model('Product', productSchema);
 module.exports = Product;

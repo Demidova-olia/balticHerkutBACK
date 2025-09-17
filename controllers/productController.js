@@ -12,6 +12,17 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
+/** ===== helpers for barcode ===== */
+const BARCODE_RE = /^\d{8,14}$/; // EAN-8 / UPC / EAN-13 / GTIN-14
+
+function normalizeBarcode(raw) {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined; // считаем пустую строку как «очистить»
+  if (!BARCODE_RE.test(s)) return null; // невалидный формат
+  return s;
+}
+
 /* =========================================================
  * CREATE
  * =======================================================*/
@@ -29,6 +40,7 @@ const createProduct = async (req, res) => {
       discount,
       isFeatured,
       isActive,
+      barcode, // <— NEW
     } = body;
 
     if (!name || String(name).trim().length < 3) {
@@ -81,6 +93,19 @@ const createProduct = async (req, res) => {
       }
     }
 
+    // ===== barcode =====
+    const bc = normalizeBarcode(barcode);
+    if (bc === null) {
+      return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+    }
+    // необязательно, но даёт более дружелюбную ошибку, чем E11000
+    if (bc) {
+      const exists = await Product.exists({ barcode: bc });
+      if (exists) {
+        return res.status(409).json({ message: "Barcode already exists" });
+      }
+    }
+
     // ===== images =====
     let images = [];
     if (req.files?.length) {
@@ -115,6 +140,7 @@ const createProduct = async (req, res) => {
       discount: discount !== undefined ? Number(discount) : undefined,
       isFeatured: isFeatured === "true" || isFeatured === true,
       isActive: isActive === "false" || isActive === false ? false : true,
+      barcode: bc, // <— NEW
     });
 
     await product.save();
@@ -128,6 +154,10 @@ const createProduct = async (req, res) => {
 
     res.status(201).json({ message: "Product created", data });
   } catch (err) {
+    // дружелюбная обработка E11000 (дубликат barcode)
+    if (err && err.code === 11000 && err.keyPattern && err.keyPattern.barcode) {
+      return res.status(409).json({ message: "Barcode already exists" });
+    }
     console.error("Error in createProduct:", err);
     res.status(500).json({ message: "Failed to create product" });
   }
@@ -142,8 +172,9 @@ const getProducts = async (req, res) => {
 
     const query = {};
     if (search) {
-      const regex = new RegExp(search, "i");
-      query.$or = [
+      const s = String(search).trim();
+      const regex = new RegExp(s, "i");
+      const or = [
         { "name.ru": regex },
         { "name.en": regex },
         { "name.fi": regex },
@@ -151,6 +182,11 @@ const getProducts = async (req, res) => {
         { "description.en": regex },
         { "description.fi": regex },
       ];
+      // если строка похожа на штрихкод — ищем и по barcode
+      if (BARCODE_RE.test(s)) {
+        or.push({ barcode: s });
+      }
+      query.$or = or;
     }
     if (category) query.category = category;
     if (subcategory) query.subcategory = subcategory;
@@ -283,6 +319,7 @@ const updateProduct = async (req, res) => {
       discount,
       isFeatured,
       isActive,
+      barcode, // <— NEW
     } = body;
 
     const product = await Product.findById(productId);
@@ -339,6 +376,7 @@ const updateProduct = async (req, res) => {
     if (typeof isActive !== "undefined")
       product.isActive = !(isActive === "false" || isActive === false);
 
+    // i18n fields
     if (name) {
       product.name = await updateLocalizedField(product.name, String(name).trim());
     }
@@ -349,6 +387,26 @@ const updateProduct = async (req, res) => {
       );
     }
 
+    // ===== barcode (set / change / clear) =====
+    if (barcode !== undefined) {
+      const bc = normalizeBarcode(barcode);
+      if (bc === null) {
+        return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+      }
+      // если прислали пустую строку — очищаем поле
+      if (!bc) {
+        product.barcode = undefined;
+      } else {
+        // проверим дубликаты у других товаров
+        const duplicate = await Product.findOne({ _id: { $ne: product._id }, barcode: bc }).lean();
+        if (duplicate) {
+          return res.status(409).json({ message: "Barcode already exists" });
+        }
+        product.barcode = bc;
+      }
+    }
+
+    // ===== images =====
     let existingImagesParsed = [];
     if (typeof existingImages !== "undefined") {
       if (Array.isArray(existingImages)) {
@@ -409,6 +467,9 @@ const updateProduct = async (req, res) => {
 
     return res.status(200).json({ message: "Product updated", data });
   } catch (error) {
+    if (error && error.code === 11000 && error.keyPattern && error.keyPattern.barcode) {
+      return res.status(409).json({ message: "Barcode already exists" });
+    }
     console.error("Error in updateProduct:", error, { headers: req.headers });
     return res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -423,17 +484,20 @@ const searchProducts = async (req, res) => {
     if (!q || q.trim() === "") {
       return res.status(400).json({ message: 'Query parameter "q" is required' });
     }
-    const regex = new RegExp(q, "i");
-    const items = await Product.find({
-      $or: [
-        { "name.ru": regex },
-        { "name.en": regex },
-        { "name.fi": regex },
-        { "description.ru": regex },
-        { "description.en": regex },
-        { "description.fi": regex },
-      ],
-    })
+    const s = String(q).trim();
+    const regex = new RegExp(s, "i");
+    const or = [
+      { "name.ru": regex },
+      { "name.en": regex },
+      { "name.fi": regex },
+      { "description.ru": regex },
+      { "description.en": regex },
+      { "description.fi": regex },
+    ];
+    if (BARCODE_RE.test(s)) {
+      or.push({ barcode: s });
+    }
+    const items = await Product.find({ $or: or })
       .limit(30)
       .populate("category")
       .populate("subcategory")
@@ -457,10 +521,9 @@ const searchProducts = async (req, res) => {
   }
 };
 
-
-const deleteProduct = async (req, res) => {  };
-const deleteProductImage = async (req, res) => { };
-const updateProductImage = async (req, res) => { };
+const deleteProduct = async (req, res) => {};
+const deleteProductImage = async (req, res) => {};
+const updateProductImage = async (req, res) => {};
 
 module.exports = {
   createProduct,
