@@ -1,6 +1,61 @@
+const mongoose = require("mongoose");
 const Order = require("../models/orderModel");
 const User = require("../models/userModel");
+const Product = require("../models/productModel");
 const { ALLOWED_ORDER_STATUSES } = require("../constants/orderStatus");
+
+/** ===== Helpers ===== */
+const STATUS_ALIASES = {
+  canceled: "canceled",
+  cancelled: "canceled",
+  cancel: "canceled",
+  canceld: "canceled",
+  "отменен": "canceled",
+  "отменён": "canceled",
+};
+
+function toObjectId(id) {
+  try {
+    return new mongoose.Types.ObjectId(id);
+  } catch {
+    return null;
+  }
+}
+
+function getProductIdFromItem(item) {
+  const candidates = [item?.productId, item?.product, item?._id];
+  for (const c of candidates) {
+    if (!c) continue;
+    if (typeof c === "string") return c;
+    if (typeof c === "object") {
+      if (c._id) return String(c._id);
+      if (typeof c.toString === "function") return c.toString();
+    }
+  }
+  return null;
+}
+
+function buildStockOps(items, sign) {
+  const ops = [];
+  for (const it of items || []) {
+    const pidStr = getProductIdFromItem(it);
+    const qty = Number(it?.quantity || 0);
+    if (!pidStr || !qty) continue;
+
+    const oid = toObjectId(pidStr);
+    if (!oid) continue;
+
+    ops.push({
+      updateOne: {
+        filter: { _id: oid },
+        update: { $inc: { stock: sign * qty } },
+      },
+    });
+  }
+  return ops;
+}
+
+/** ===== Controllers ===== */
 
 const createOrder = async (req, res) => {
   try {
@@ -27,12 +82,11 @@ const createOrder = async (req, res) => {
   }
 };
 
-const getOrders = async (req, res) => {
+const getOrders = async (_req, res) => {
   try {
     const orders = await Order.find()
       .populate("user", "username email")
       .populate("items.productId", "name price image");
-
     res.send(orders);
   } catch (error) {
     res.status(500).send(error);
@@ -48,7 +102,6 @@ const getOrderById = async (req, res) => {
     if (!order) {
       return res.status(404).send({ error: "Order Not found" });
     }
-
     res.send(order);
   } catch (error) {
     res.status(500).send(error);
@@ -70,17 +123,16 @@ const deleteOrder = async (req, res) => {
 };
 
 const getUserOrders = async (req, res) => {
-  const { user } = req.params;
+  // роут у тебя /orders/user/:userId — значит нужно брать userId
+  const { userId } = req.params;
 
   try {
-    if (req.user.id !== user) {
+    if (String(req.user.id) !== String(userId)) {
       return res
         .status(403)
-        .send({
-          message: "Access denied. You cannot view other users' orders.",
-        });
+        .send({ message: "Access denied. You cannot view other users' orders." });
     }
-    const foundUser = await User.findById(user).populate("orders");
+    const foundUser = await User.findById(userId).populate("orders");
 
     if (!foundUser) {
       return res.status(404).send({ message: "User not found" });
@@ -128,25 +180,67 @@ const checkout = async (req, res) => {
   }
 };
 
+/**
+ * ВАЖНО: теперь этот метод тоже корректно возвращает товар на склад,
+ * если статус меняется в/из 'canceled'.
+ */
 const updateOrder = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body; 
 
-    if (status && !ALLOWED_ORDER_STATUSES.includes(status)) {
+    // нормализуем статус (страховка от опечаток/локализаций)
+    let nextStatus = req.body?.status;
+    if (typeof nextStatus === "string") {
+      nextStatus = STATUS_ALIASES[nextStatus.toLowerCase().trim()] || nextStatus.toLowerCase().trim();
+    }
+
+    if (nextStatus && !ALLOWED_ORDER_STATUSES.includes(nextStatus)) {
       return res.status(400).send({ error: "Invalid order status" });
-    } 
+    }
 
-    const updated = await Order.findOneAndUpdate(
-      { _id: id },
-      { $set: req.body },
-      { new: true }
-    );
+    // берём текущий заказ
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+
+    const prevStatus = order.status;
+    const bodyHasItems = Array.isArray(req.body?.items);
+
+    // Если меняется только статус — обрабатываем переход в/из canceled
+    if (nextStatus && !bodyHasItems) {
+      const delta =
+        (nextStatus === "canceled" ? 1 : 0) - (prevStatus === "canceled" ? 1 : 0);
+
+      if (delta !== 0) {
+        const ops = buildStockOps(order.items, delta);
+        if (ops.length) {
+          const bulkRes = await Product.bulkWrite(ops);
+          console.log("[orders:updateOrder] stock bulk", {
+            matched: bulkRes.matchedCount,
+            modified: bulkRes.modifiedCount,
+          });
+        } else {
+          console.warn("[orders:updateOrder] no stock ops built");
+        }
+      }
+    }
+
+    // Обновляем поля. Если прилетели items — твой pre('findOneAndUpdate') уже пересчитает total и сток.
+    const update = { $set: { ...req.body } };
+    if (nextStatus) update.$set.status = nextStatus;
+
+    const updated = await Order.findOneAndUpdate({ _id: id }, update, { new: true })
+      .populate("user", "username email")
+      .populate("items.productId", "name price image");
+
     if (!updated) {
       return res.status(404).send({ message: "Order not found" });
     }
+
     res.status(200).send(updated);
   } catch (error) {
+    console.error("[orders:updateOrder] error:", error);
     res.status(500).send({ message: "Failed to update order", error });
   }
 };

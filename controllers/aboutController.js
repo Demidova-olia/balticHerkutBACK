@@ -30,10 +30,13 @@ const parseMaybeJSON = (v) => {
 
 const coerceAboutBody = (raw) => {
   const b = { ...raw };
+
   for (const k of [
     "title","subtitle","descriptionIntro","descriptionMore",
     "address","hours","socialsHandle","reasonsTitle","requisitesTitle"
-  ]) if (typeof b[k] === "string") b[k] = parseMaybeJSON(b[k]);
+  ]) {
+    if (typeof b[k] === "string") b[k] = parseMaybeJSON(b[k]);
+  }
 
   if (typeof b.reasons === "string") {
     const parsed = parseMaybeJSON(b.reasons);
@@ -41,16 +44,18 @@ const coerceAboutBody = (raw) => {
     else if (b.reasons.trim()) b.reasons = [b.reasons.trim()];
     else b.reasons = [];
   }
+
   if (!Array.isArray(b.reasons) && b.reasons && typeof b.reasons === "object") {
     b.reasons = Object.keys(b.reasons)
       .sort((a, z) => Number(a) - Number(z))
       .map((k) => b.reasons[k]);
   }
+
   return b;
 };
 
 /** ===== Локализация: ЗЕРКАЛО ИЗ ТЕКУЩЕГО ЯЗЫКА ВО ВСЕ ===== */
-/* ВАЖНО: если прилетает объект {en|ru|fi}, берём:
+/* Если прилетает объект {en|ru|fi}, берём:
    incoming[lang] || incoming.en || incoming.ru || incoming.fi || prev[lang] || prev.en || prev.ru || prev.fi
    → и зеркалим этот текст во все языки.
 */
@@ -80,49 +85,15 @@ function setLocalizedMirror(doc, key, incoming, lang) {
   doc[key] = { en: value, ru: value, fi: value, _source: lang };
 }
 
-/** ===== GET /about ===== */
+/** ===== GET /about =====
+ * Больше НЕ создаём документ и НЕ подставляем дефолты.
+ * Если в базе ничего нет — отдаём пустой объект {}
+ */
 exports.getAbout = async (_req, res) => {
   try {
-    let doc = await AboutContent.findOne();
+    const doc = await AboutContent.findOne();
     if (!doc) {
-      doc = await AboutContent.create({
-        heroImageUrl: "/assets/Logo.jpg",
-        storeImageUrl: "/assets/storefront.jpg",
-        requisitesImageUrl: "/assets/banner_margins.jpg",
-
-        title: { en: "About Us", _source: "en" },
-        subtitle: {
-          en: "Baltic Herkut — your favorite Baltic foods in Oulu.",
-          _source: "en",
-        },
-
-        descriptionIntro: {
-          en: "We bring fresh and trusted products from the Baltic region: dairy and meat products, fish, preserves, sweets, beverages and more.",
-          _source: "en",
-        },
-        descriptionMore: {
-          en: "We work daily to keep fair prices and friendly service. You're always welcome to discover new flavors!",
-          _source: "en",
-        },
-
-        address: { en: "Limingantie 9, Oulu", _source: "en" },
-        hours: {
-          en: "Mon–Fri 12:00–19:00, Sat 12:00–17:00, Sun 12:00–16:00",
-          _source: "en",
-        },
-        gmapsUrl: "https://maps.google.com/?q=Limingantie+9,+Oulu",
-
-        socialsHandle: { en: "@balticherkut", _source: "en" },
-
-        reasonsTitle: { en: "Why Baltic Herkut?", _source: "en" },
-        requisitesTitle: { en: "Requisites", _source: "en" },
-
-        reasons: [
-          { en: "Reliable suppliers and stable quality", _source: "en" },
-          { en: "Regularly updated assortment", _source: "en" },
-          { en: "Friendly staff and help with selection", _source: "en" },
-        ],
-      });
+      return res.status(200).json({ message: "About empty", data: {} });
     }
     res.status(200).json({ message: "About loaded", data: doc });
   } catch (err) {
@@ -158,7 +129,7 @@ exports.updateAbout = async (req, res) => {
     if (typeof body.requisitesImageUrl !== "undefined") doc.requisitesImageUrl = body.requisitesImageUrl;
     if (typeof body.gmapsUrl !== "undefined")           doc.gmapsUrl = body.gmapsUrl;
 
-    // локализованные поля — зеркалим
+    // локализованные поля — ЗЕРКАЛИМ
     if (typeof body.title !== "undefined")            setLocalizedMirror(doc, "title", body.title, lang);
     if (typeof body.subtitle !== "undefined")         setLocalizedMirror(doc, "subtitle", body.subtitle, lang);
     if (typeof body.descriptionIntro !== "undefined") setLocalizedMirror(doc, "descriptionIntro", body.descriptionIntro, lang);
@@ -169,16 +140,17 @@ exports.updateAbout = async (req, res) => {
     if (typeof body.reasonsTitle !== "undefined")     setLocalizedMirror(doc, "reasonsTitle", body.reasonsTitle, lang);
     if (typeof body.requisitesTitle !== "undefined")  setLocalizedMirror(doc, "requisitesTitle", body.requisitesTitle, lang);
 
-    // reasons — текст активного языка (или любой имеющийся) везде
+    // reasons — берём текст активного языка (или любой имеющийся) и зеркалим
     if (Array.isArray(body.reasons)) {
+      const prev = Array.isArray(doc.reasons) ? doc.reasons : [];
       const out = body.reasons.map((val, i) => {
         let text = "";
         if (val && typeof val === "object") {
-          text = pickText(val, lang);
+          text = pickText(val, lang, prev[i]);
         } else {
           text = String(val ?? "").trim();
         }
-        if (!text) return (doc.reasons?.[i] || {});
+        if (!text) return prev[i] || {};
         return { en: text, ru: text, fi: text, _source: lang };
       });
       doc.reasons = out;
