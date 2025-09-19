@@ -25,9 +25,22 @@ const router = express.Router();
 /** ===== Read ===== */
 router.get("/id/:id", getProductById);
 router.get("/search", searchProducts);
-router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
-router.get("/:categoryId", getProductsByCategory);
-router.get("/", getProducts);
+
+/** ===== Image operations (placed BEFORE parametric GETs) ===== */
+router.delete(
+  "/:productId/images/:publicId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  deleteProductImage
+);
+
+router.put(
+  "/:productId/images/:publicId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  upload.single("image"),
+  updateProductImage
+);
 
 /** ===== Create/Update/Delete product ===== */
 router.post(
@@ -53,19 +66,9 @@ router.delete(
   deleteProduct
 );
 
-router.delete(
-  "/:productId/images/:publicId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  deleteProductImage
-);
-
-router.put(
-  "/:productId/images/:publicId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.single("image"),
-  updateProductImage
-);
+/** ===== Parametric category GETs (keep at the end) ===== */
+router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
+router.get("/:categoryId", getProductsByCategory);
+router.get("/", getProducts);
 
 module.exports = router;
