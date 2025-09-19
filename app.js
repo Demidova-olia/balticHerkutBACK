@@ -4,7 +4,6 @@ require("dotenv").config();
 require("./db");
 
 const path = require("path");
-const cookieParser = require("cookie-parser"); // for reading cookies if you set JWT as cookie
 const cloudinary = require("cloudinary").v2;
 
 const AppError = require("./utils/appError");
@@ -45,32 +44,29 @@ app.use((req, res, next) => {
   const origin = req.headers.origin || "";
   const allowed = isAllowedOrigin(origin);
 
-  // Always vary by origin to avoid cache poisoning
+  // always vary by origin to avoid cache mixing
   res.setHeader("Vary", "Origin");
 
   if (allowed && origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
 
-    // echo requested methods/headers (safest)
+    // echo requested methods/headers (safest for diverse clients)
     const reqMethod = req.headers["access-control-request-method"];
     const reqHeaders = req.headers["access-control-request-headers"];
 
     res.setHeader("Access-Control-Allow-Methods", reqMethod || DEFAULT_METHODS);
     res.setHeader("Access-Control-Allow-Headers", reqHeaders || DEFAULT_HEADERS);
     res.setHeader("Access-Control-Expose-Headers", EXPOSE_HEADERS);
-
-    // cache preflight to reduce OPTIONS noise
-    res.setHeader("Access-Control-Max-Age", "86400"); // 24h
+    res.setHeader("Access-Control-Max-Age", "86400"); // cache preflight 24h
   }
 
-  // Preflight fast-path (return headers above if allowed)
+  // fast-path preflight
   if (req.method === "OPTIONS") {
-    // Some proxies drop headers on 204; 204 is fine, but 200 is safer for certain CDNs.
-    return res.status(allowed ? 200 : 403).end();
+    return res.status(allowed ? 204 : 403).end();
   }
 
-  // Block real requests from disallowed origins
+  // block real requests from disallowed origins
   if (!allowed && origin) {
     return res.status(403).json({ message: "Not allowed by CORS" });
   }
@@ -82,7 +78,6 @@ app.use((req, res, next) => {
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-app.use(cookieParser()); // safe to have even if you don’t use cookies yet
 
 app.use("/images", express.static(path.join(__dirname, "public", "images")));
 
