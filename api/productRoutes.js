@@ -1,6 +1,5 @@
 // api/productRoutes.js
 const express = require("express");
-const multer = require("multer");
 
 const {
   getProducts,
@@ -19,18 +18,18 @@ const rolesMiddleware = require("../middlewares/rolesMiddleware");
 const authMiddleware = require("../middlewares/authMiddleware");
 const ROLES = require("../config/roles");
 
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = require("../middlewares/multer");
 
 const router = express.Router();
 
+/** ===== Read ===== */
 router.get("/id/:id", getProductById);
 router.get("/search", searchProducts);
-
 router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
 router.get("/:categoryId", getProductsByCategory);
-
 router.get("/", getProducts);
 
+/** ===== Create/Update/Delete product ===== */
 router.post(
   "/",
   authMiddleware,
@@ -54,10 +53,17 @@ router.delete(
   deleteProduct
 );
 
-router.delete("/:productId/images/:publicId", deleteProductImage);
+router.delete(
+  "/:productId/images/:publicId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  deleteProductImage
+);
 
 router.put(
   "/:productId/images/:publicId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
   upload.single("image"),
   updateProductImage
 );
