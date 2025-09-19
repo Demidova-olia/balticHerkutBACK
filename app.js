@@ -11,45 +11,69 @@ const globalErrorHandler = require("./controllers/errorController");
 
 const app = express();
 
-const ALLOW_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
-const ALLOW_HEADERS =
+/* ==================== CORS (robust) ==================== */
+const DEFAULT_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
+const DEFAULT_HEADERS =
   "Origin,X-Requested-With,Content-Type,Accept,Authorization,Accept-Language";
 const EXPOSE_HEADERS = "Set-Cookie";
 
-const allowRaw = [
+// список точных Origin из env и локалки
+const RAW_ALLOW = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  process.env.FRONTEND_URL,
+  process.env.FRONTEND_URL, // например: https://your-frontend.app
 ].filter(Boolean);
 
-const normalize = (s) => String(s || "").replace(/\/$/, "").toLowerCase();
-const allowedExact = allowRaw.map(normalize);
+const normalizeOrigin = (s) => String(s || "").replace(/\/$/, "").toLowerCase();
+const EXACT_ALLOW = RAW_ALLOW.map(normalizeOrigin);
 
-const allowRegex = [
+// локальная сеть (только порт 5173 под Vite)
+const LOCAL_REGEX = [
   /^http:\/\/192\.168\.\d+\.\d+:5173$/i,
   /^http:\/\/10\.\d+\.\d+\.\d+:5173$/i,
 ];
 
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // запросы без Origin (Postman/SSR) пропускаем
+  const norm = normalizeOrigin(origin);
+  if (EXACT_ALLOW.includes(norm)) return true;
+  return LOCAL_REGEX.some((re) => re.test(origin));
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
-  const nOrigin = normalize(origin);
+  const allowed = isAllowedOrigin(origin);
 
-  const isAllowed =
-    (!!nOrigin && allowedExact.includes(nOrigin)) ||
-    allowRegex.some((re) => re.test(origin));
-
-  if (isAllowed) {
-
+  // Если разрешённый origin — ставим все нужные заголовки
+  if (allowed && origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Methods", ALLOW_METHODS);
-    res.setHeader("Access-Control-Allow-Headers", ALLOW_HEADERS);
+
+    // Эхо запрошенных браузером методов/заголовков (самый надёжный подход)
+    const reqMethod = req.headers["access-control-request-method"];
+    const reqHeaders = req.headers["access-control-request-headers"];
+
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      reqMethod || DEFAULT_METHODS
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      reqHeaders || DEFAULT_HEADERS
+    );
+
     res.setHeader("Access-Control-Expose-Headers", EXPOSE_HEADERS);
   }
 
+  // Preflight — всегда быстрый ответ (если origin разрешён — уже с заголовками)
   if (req.method === "OPTIONS") {
-    return res.sendStatus(isAllowed ? 204 : 403);
+    return res.sendStatus(allowed ? 204 : 403);
+  }
+
+  // Блокируем реальные запросы с неразрешённого origin
+  if (!allowed && origin) {
+    return res.status(403).json({ message: "Not allowed by CORS" });
   }
 
   next();
@@ -95,10 +119,12 @@ app.use("/api/admin", adminAPIRoutes);
 app.use("/api/reviews", reviewAPIRoutes);
 app.use("/api/about", aboutRoutes);
 
+// 404
 app.use((req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
 
+// Global error
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
   if (globalErrorHandler) return globalErrorHandler(err, req, res, next);
