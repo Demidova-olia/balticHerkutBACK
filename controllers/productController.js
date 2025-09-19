@@ -12,14 +12,14 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
-/** ===== helpers for barcode ===== */
-const BARCODE_RE = /^\d{8,14}$/; // EAN-8 / UPC / EAN-13 / GTIN-14
+
+const BARCODE_RE = /^\d{8,14}$/; 
 
 function normalizeBarcode(raw) {
   if (raw == null) return undefined;
   const s = String(raw).trim();
-  if (!s) return undefined; // считаем пустую строку как «очистить»
-  if (!BARCODE_RE.test(s)) return null; // невалидный формат
+  if (!s) return undefined; 
+  if (!BARCODE_RE.test(s)) return null; 
   return s;
 }
 
@@ -28,8 +28,7 @@ function isCloudinaryUrl(url) {
   return typeof url === "string" && /res\.cloudinary\.com\/.+\/image\/upload\//.test(url);
 }
 
-// Напр.: https://res.cloudinary.com/<cloud>/image/upload/v1725100000/products/folder/my_img_abcd.jpg
-// public_id -> "products/folder/my_img_abcd"
+
 function extractPublicIdFromUrl(url) {
   if (!isCloudinaryUrl(url)) return null;
   try {
@@ -65,7 +64,6 @@ function collectPublicIdsFromImages(images) {
       if (pid) ids.push(pid);
     }
   }
-  // убрать заглушки
   return ids.filter((pid) => pid && pid !== "default_local_image");
 }
 
@@ -190,7 +188,7 @@ const createProduct = async (req, res) => {
       discount: discount !== undefined ? Number(discount) : undefined,
       isFeatured: isFeatured === "true" || isFeatured === true,
       isActive: isActive === "false" || isActive === false ? false : true,
-      barcode: bc, // <— NEW
+      barcode: bc, 
     });
 
     await product.save();
@@ -367,7 +365,7 @@ const updateProduct = async (req, res) => {
       discount,
       isFeatured,
       isActive,
-      barcode, // <— NEW
+      barcode, 
     } = body;
 
     const product = await Product.findById(productId);
@@ -612,20 +610,19 @@ const deleteProduct = async (req, res) => {
  * =======================================================*/
 const deleteProductImage = async (req, res) => {
   try {
-    const { id } = req.params;
-    const rawPublicId = decodeURIComponent(req.params.publicId || "");
+    const productId = String(req.params.productId || req.params.id || "").trim();
+    const rawPublicId = decodeURIComponent(String(req.params.publicId || "").trim());
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
       return res.status(400).json({ message: "Invalid product ID" });
     }
     if (!rawPublicId) {
       return res.status(400).json({ message: "publicId is required" });
     }
 
-    const product = await Product.findById(id);
+    const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    // cloudinary destroy
     try {
       if (rawPublicId !== "default_local_image") {
         const resDel = await cloudinary.uploader.destroy(rawPublicId);
@@ -647,7 +644,7 @@ const deleteProductImage = async (req, res) => {
 
     return res.status(200).json({
       message: "Image deleted",
-      data: { _id: id, public_id: rawPublicId },
+      data: { _id: productId, public_id: rawPublicId },
     });
   } catch (error) {
     console.error("Error in deleteProductImage:", error);
@@ -660,21 +657,20 @@ const deleteProductImage = async (req, res) => {
  * =======================================================*/
 const updateProductImage = async (req, res) => {
   try {
-    const { id } = req.params;
-    const oldPid = decodeURIComponent(req.params.publicId || "");
+    const productId = String(req.params.productId || req.params.id || "").trim();
+    const oldPid = decodeURIComponent(String(req.params.publicId || "").trim());
     const file = req.file;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
       return res.status(400).json({ message: "Invalid product ID" });
     }
     if (!file) {
       return res.status(400).json({ message: "Image file is required" });
     }
 
-    const product = await Product.findById(id);
+    const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-  
     const uploaded = await uploadToCloudinary(file.buffer, file.originalname);
     const newUrl = uploaded.secure_url || uploaded.url;
     const newPid = uploaded.public_id;
@@ -700,7 +696,7 @@ const updateProductImage = async (req, res) => {
 
     return res.status(200).json({
       message: "Image updated",
-      data: { _id: id, public_id: newPid, url: newUrl },
+      data: { _id: productId, public_id: newPid, url: newUrl },
     });
   } catch (error) {
     console.error("Error in updateProductImage:", error);
@@ -716,7 +712,8 @@ module.exports = {
   getProductsByCategoryAndSubcategory,
   updateProduct,
   searchProducts,
-  deleteProduct,        
-  deleteProductImage,   
-  updateProductImage,   
+  deleteProduct,
+  deleteProductImage,
+  updateProductImage,
 };
+
