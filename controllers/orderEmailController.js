@@ -2,8 +2,7 @@
 let nodemailer;
 try {
   nodemailer = require("nodemailer");
-} catch (e) {
-
+} catch {
   nodemailer = null;
 }
 
@@ -105,7 +104,7 @@ const renderHTML = ({ order, customer }) => {
 exports.sendOrderEmail = async (req, res) => {
   try {
     if (!nodemailer) {
-      return res.status(500).json({ message: "Email service is not installed (nodemailer missing)" });
+      return res.status(500).json({ message: "Email service not installed (nodemailer missing)" });
     }
 
     const to = process.env.ORDER_TO || "baltic.herkut@gmail.com";
@@ -118,7 +117,13 @@ exports.sendOrderEmail = async (req, res) => {
     if (!order.items || !Array.isArray(order.items) || order.items.length === 0) {
       return res.status(400).json({ message: "Order items are required" });
     }
-    if (!process.env.MAIL_FROM || !process.env.MAIL_APP_PASSWORD) {
+    const fromUser = process.env.MAIL_FROM || "baltic.herkut@gmail.com";
+    const appPass = process.env.MAIL_APP_PASSWORD;
+    const host = process.env.SMTP_HOST || "smtp.gmail.com";
+    const port = Number(process.env.SMTP_PORT || 587); 
+    const secure = port === 465; 
+
+    if (!fromUser || !appPass) {
       return res.status(500).json({ message: "Mail credentials are not configured" });
     }
 
@@ -127,29 +132,40 @@ exports.sendOrderEmail = async (req, res) => {
       `Новый заказ — ${customer.name} (${Number(order.total || 0).toFixed(2)} €)`;
 
     const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: Number(process.env.SMTP_PORT || 465),
-      secure: true,
-      auth: {
-        user: process.env.MAIL_FROM,
-        pass: process.env.MAIL_APP_PASSWORD,
-      },
+      host,
+      port,
+      secure,
+      auth: { user: fromUser, pass: appPass },
     });
+
+    await transporter.verify();
 
     const text = renderText({ order, customer });
     const html = renderHTML({ order, customer });
 
-    await transporter.sendMail({
-      from: `"Baltic Herkut" <${process.env.MAIL_FROM}>`,
+    const info = await transporter.sendMail({
+      from: `"Baltic Herkut" <${fromUser}>`,
       to,
       subject,
       text,
       html,
     });
 
-    res.json({ ok: true });
+    res.json({ ok: true, messageId: info.messageId });
   } catch (err) {
-    console.error("sendOrderEmail error:", err);
-    res.status(500).json({ message: "Failed to send order email" });
+
+    console.error("sendOrderEmail error:", {
+      message: err?.message,
+      code: err?.code,
+      command: err?.command,
+      response: err?.response,
+      stack: err?.stack,
+    });
+
+    res.status(500).json({
+      message: "Failed to send order email",
+      reason: err?.message || "Unknown error",
+      code: err?.code || null,
+    });
   }
 };
