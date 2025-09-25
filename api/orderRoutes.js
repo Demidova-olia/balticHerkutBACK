@@ -1,6 +1,6 @@
 // api/orderRoutes.js
 const express = require("express");
-const rateLimit = require("express-rate-limit");
+const { rateLimit } = require("express-rate-limit"); 
 
 const {
   getOrders,
@@ -20,10 +20,8 @@ const ROLES = require("../config/roles");
 
 const router = express.Router();
 
-/* ========== helpers ========== */
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
-
 
 const validateOrderEmail = (req, res, next) => {
   const b = req.body || {};
@@ -54,8 +52,8 @@ const validateOrderEmail = (req, res, next) => {
 };
 
 const emailLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, 
-  max: 10,                  
+  windowMs: 15 * 60 * 1000,
+  max: 10,               
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many requests, please try again later." },
@@ -63,22 +61,18 @@ const emailLimiter = rateLimit({
 
 const requireEmailKey = (req, res, next) => {
   const expected = process.env.ORDER_EMAIL_KEY;
-  if (!expected) return next(); 
+  if (!expected) return next(); // если ключ не настроен — пропускаем
   const got = req.get("x-order-email-key");
   if (got && got === expected) return next();
   return res.status(401).json({ message: "Unauthorized" });
 };
 
-router.post(
-  "/email",
-  emailLimiter,
-  requireEmailKey,     
-  validateOrderEmail,
-  asyncHandler(sendOrderEmail)
-);
+router.get("/health", (req, res) => {
+  res.json({ ok: true, router: "orders", ts: Date.now() });
+});
 
 if (process.env.NODE_ENV !== "production") {
-  router.get("/email/test", (req, res, next) => {
+  router.get("/email/test", requireEmailKey, (req, res, next) => {
     req.body = {
       order: { items: [{ name: "Test item", price: 3.5, quantity: 2 }], total: 7.0 },
       customer: { name: "Tester", email: "tester@example.com" },
@@ -88,6 +82,13 @@ if (process.env.NODE_ENV !== "production") {
   });
 }
 
+router.post(
+  "/email",
+  emailLimiter,
+  requireEmailKey,
+  validateOrderEmail,
+  asyncHandler(sendOrderEmail)
+);
 
 router.get("/", authMiddleware, rolesMiddleware(ROLES.ADMIN), getOrders);
 
