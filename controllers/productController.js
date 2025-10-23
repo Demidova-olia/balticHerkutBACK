@@ -12,14 +12,17 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
+// === NEW: утилиты/сервисы для Erply ===
+const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
+const { upsertFromErply, syncPriceStockByErplyId } = require("../services/erplySyncService");
 
-const BARCODE_RE = /^\d{8,14}$/; 
+const BARCODE_RE = /^\d{8,14}$/;
 
 function normalizeBarcode(raw) {
   if (raw == null) return undefined;
   const s = String(raw).trim();
-  if (!s) return undefined; 
-  if (!BARCODE_RE.test(s)) return null; 
+  if (!s) return undefined;
+  if (!BARCODE_RE.test(s)) return null;
   return s;
 }
 
@@ -27,7 +30,6 @@ function normalizeBarcode(raw) {
 function isCloudinaryUrl(url) {
   return typeof url === "string" && /res\.cloudinary\.com\/.+\/image\/upload\//.test(url);
 }
-
 
 function extractPublicIdFromUrl(url) {
   if (!isCloudinaryUrl(url)) return null;
@@ -78,6 +80,44 @@ async function deleteCloudinaryResources(publicIds) {
 const createProduct = async (req, res) => {
   try {
     const body = req.body || {};
+
+    // === OPTIONAL PATCH: если админ прислал erplyId или barcode,
+    // пробуем сразу импортировать из Erply и создать локально.
+    if (body.erplyId || body.barcode) {
+      try {
+        const remote = body.erplyId
+          ? await fetchProductById(body.erplyId)
+          : await fetchProductByBarcode(body.barcode);
+
+        if (!remote) {
+          return res.status(404).json({ message: "Erply product not found for provided ID/barcode" });
+        }
+
+        let doc = await upsertFromErply(remote); // создаст/обновит, перезальёт картинки в Cloudinary
+        // Применим локальные поля, если пришли:
+        if (typeof body.brand !== "undefined") doc.brand = String(body.brand).trim();
+        if (typeof body.discount !== "undefined") doc.discount = Number(body.discount);
+        if (typeof body.isFeatured !== "undefined")
+          doc.isFeatured = body.isFeatured === "true" || body.isFeatured === true;
+        if (typeof body.isActive !== "undefined")
+          doc.isActive = !(body.isActive === "false" || body.isActive === false);
+
+        await doc.save();
+
+        const want = pickLangFromReq(req);
+        const data = doc.toObject();
+        data.name_i18n = data.name;
+        data.description_i18n = data.description;
+        data.name = pickLocalized(data.name, want);
+        data.description = pickLocalized(data.description, want);
+
+        return res.status(201).json({ message: "Product created from Erply", data });
+      } catch (e) {
+        console.warn("createProduct: erply import failed, fallback to manual create", e?.message);
+        // пойдём по вашей ручной ветке ниже
+      }
+    }
+
     const {
       name,
       description,
@@ -188,7 +228,7 @@ const createProduct = async (req, res) => {
       discount: discount !== undefined ? Number(discount) : undefined,
       isFeatured: isFeatured === "true" || isFeatured === true,
       isActive: isActive === "false" || isActive === false ? false : true,
-      barcode: bc, 
+      barcode: bc,
     });
 
     await product.save();
@@ -365,7 +405,7 @@ const updateProduct = async (req, res) => {
       discount,
       isFeatured,
       isActive,
-      barcode, 
+      barcode,
     } = body;
 
     const product = await Product.findById(productId);
@@ -653,7 +693,7 @@ const deleteProductImage = async (req, res) => {
 };
 
 /* =========================================================
- * UPDATE SINGLE IMAGE 
+ * UPDATE SINGLE IMAGE
  * =======================================================*/
 const updateProductImage = async (req, res) => {
   try {
@@ -704,6 +744,100 @@ const updateProductImage = async (req, res) => {
   }
 };
 
+/* =========================================================
+ * NEW: IMPORT FROM ERPLY (BY ID)
+ * =======================================================*/
+const importFromErplyById = async (req, res) => {
+  try {
+    const { erplyId } = req.params;
+    if (!erplyId) return res.status(400).json({ message: "erplyId is required" });
+
+    const remote = await fetchProductById(erplyId);
+    if (!remote) return res.status(404).json({ message: "Erply product not found" });
+
+    const doc = await upsertFromErply(remote);
+    return res.status(200).json({ message: "Imported from Erply", data: doc });
+  } catch (e) {
+    console.error("importFromErplyById", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * NEW: IMPORT FROM ERPLY (BY BARCODE)
+ * =======================================================*/
+const importFromErplyByBarcode = async (req, res) => {
+  try {
+    const { barcode } = req.params;
+    if (!barcode) return res.status(400).json({ message: "barcode is required" });
+    if (!BARCODE_RE.test(String(barcode))) {
+      return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+    }
+
+    const remote = await fetchProductByBarcode(barcode);
+    if (!remote) return res.status(404).json({ message: "Erply product not found" });
+
+    const doc = await upsertFromErply(remote);
+    return res.status(200).json({ message: "Imported from Erply", data: doc });
+  } catch (e) {
+    console.error("importFromErplyByBarcode", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * NEW: ENSURE BY BARCODE (если нет — создаст из Erply)
+ * =======================================================*/
+const ensureByBarcode = async (req, res) => {
+  try {
+    const { barcode } = req.params;
+    if (!BARCODE_RE.test(String(barcode || ""))) {
+      return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+    }
+
+    let doc = await Product.findOne({ barcode }).populate("category").populate("subcategory");
+    if (!doc) {
+      const remote = await fetchProductByBarcode(barcode);
+      if (!remote) return res.status(404).json({ message: "Erply product not found" });
+      doc = await upsertFromErply(remote);
+      await doc.populate("category").populate("subcategory");
+    }
+
+    const want = pickLangFromReq(req);
+    const data = doc.toObject();
+    data.name_i18n = data.name;
+    data.description_i18n = data.description;
+    data.name = pickLocalized(data.name, want);
+    data.description = pickLocalized(data.description, want);
+
+    return res.status(200).json({ message: "OK", data });
+  } catch (e) {
+    console.error("ensureByBarcode error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * NEW: LIGHT SYNC (обновить только price и stock из Erply)
+ * =======================================================*/
+const syncPriceStock = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    const product = await Product.findById(id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+    if (!product.erplyId) return res.status(400).json({ message: "Product has no erplyId" });
+
+    const result = await syncPriceStockByErplyId(product.erplyId);
+    return res.status(200).json({ message: "Synced price & stock", data: result });
+  } catch (e) {
+    console.error("syncPriceStock", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 module.exports = {
   createProduct,
   getProducts,
@@ -715,5 +849,10 @@ module.exports = {
   deleteProduct,
   deleteProductImage,
   updateProductImage,
-};
 
+  // NEW:
+  importFromErplyById,
+  importFromErplyByBarcode,
+  ensureByBarcode,
+  syncPriceStock,
+};

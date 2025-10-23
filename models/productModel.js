@@ -26,9 +26,7 @@ const productSchema = new mongoose.Schema(
     barcode: {
       type: String,
       trim: true,
-
       set: (v) => (v === '' ? undefined : v),
-
       validate: {
         validator: (v) => v == null || /^\d{8,14}$/.test(String(v)),
         message: 'Invalid barcode: expected 8–14 digits',
@@ -42,6 +40,8 @@ const productSchema = new mongoose.Schema(
         {
           url: { type: String, required: true },
           public_id: { type: String, required: true },
+          // необязательно, но удобно хранить первоисточник (например, из Erply)
+          sourceUrl: { type: String },
         },
       ],
       default: [],
@@ -51,11 +51,20 @@ const productSchema = new mongoose.Schema(
     isFeatured: { type: Boolean, default: false },
     discount: { type: Number, min: 0, max: 100 },
     isActive: { type: Boolean, default: true },
+
+    // === PATCH: поля для связки с Erply ===
+    erplyId: { type: String, index: true, sparse: true },
+    erplySKU: { type: String, trim: true },
+    erpSource: { type: String, enum: ['erply', 'manual'], default: 'manual' },
+    erplySyncedAt: { type: Date },
+    erplyHash: { type: String },
   },
   { timestamps: true }
 );
 
 productSchema.index({ barcode: 1 }, { unique: true, sparse: true });
+// уникальный разреженный индекс по erplyId
+productSchema.index({ erplyId: 1 }, { unique: true, sparse: true });
 
 const Product = mongoose.model('Product', productSchema);
 module.exports = Product;
