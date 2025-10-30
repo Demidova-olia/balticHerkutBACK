@@ -12,11 +12,12 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
-// === NEW: утилиты/сервисы для Erply ===
+// Erply helpers
 const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
 const { upsertFromErply, syncPriceStockByErplyId } = require("../services/erplySyncService");
 
-const BARCODE_RE = /^\d{8,14}$/;
+// === barcode: 4–14 digits ===
+const BARCODE_RE = /^\d{4,14}$/;
 
 function normalizeBarcode(raw) {
   if (raw == null) return undefined;
@@ -26,11 +27,10 @@ function normalizeBarcode(raw) {
   return s;
 }
 
-/** ===== helpers for Cloudinary deletion (public_id из URL) ===== */
+/** ===== Cloudinary helpers ===== */
 function isCloudinaryUrl(url) {
   return typeof url === "string" && /res\.cloudinary\.com\/.+\/image\/upload\//.test(url);
 }
-
 function extractPublicIdFromUrl(url) {
   if (!isCloudinaryUrl(url)) return null;
   try {
@@ -49,7 +49,6 @@ function extractPublicIdFromUrl(url) {
     return null;
   }
 }
-
 function collectPublicIdsFromImages(images) {
   const ids = [];
   for (const img of Array.isArray(images) ? images : []) {
@@ -68,7 +67,6 @@ function collectPublicIdsFromImages(images) {
   }
   return ids.filter((pid) => pid && pid !== "default_local_image");
 }
-
 async function deleteCloudinaryResources(publicIds) {
   if (!publicIds.length) return { deleted: {} };
   return await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
@@ -81,8 +79,7 @@ const createProduct = async (req, res) => {
   try {
     const body = req.body || {};
 
-    // === OPTIONAL PATCH: если админ прислал erplyId или barcode,
-    // пробуем сразу импортировать из Erply и создать локально.
+    // Если пришёл erplyId или barcode — пробуем сразу импортировать и создать
     if (body.erplyId || body.barcode) {
       try {
         const remote = body.erplyId
@@ -93,8 +90,7 @@ const createProduct = async (req, res) => {
           return res.status(404).json({ message: "Erply product not found for provided ID/barcode" });
         }
 
-        let doc = await upsertFromErply(remote); // создаст/обновит, перезальёт картинки в Cloudinary
-        // Применим локальные поля, если пришли:
+        let doc = await upsertFromErply(remote);
         if (typeof body.brand !== "undefined") doc.brand = String(body.brand).trim();
         if (typeof body.discount !== "undefined") doc.discount = Number(body.discount);
         if (typeof body.isFeatured !== "undefined")
@@ -114,7 +110,6 @@ const createProduct = async (req, res) => {
         return res.status(201).json({ message: "Product created from Erply", data });
       } catch (e) {
         console.warn("createProduct: erply import failed, fallback to manual create", e?.message);
-        // пойдём по вашей ручной ветке ниже
       }
     }
 
@@ -133,14 +128,10 @@ const createProduct = async (req, res) => {
     } = body;
 
     if (!name || String(name).trim().length < 3) {
-      return res
-        .status(400)
-        .json({ message: "Name is required and must be at least 3 characters" });
+      return res.status(400).json({ message: "Name is required and must be at least 3 characters" });
     }
     if (!description || String(description).trim().length < 10) {
-      return res
-        .status(400)
-        .json({ message: "Description is required and must be at least 10 characters" });
+      return res.status(400).json({ message: "Description is required and must be at least 10 characters" });
     }
 
     const parsedPrice = Number(price);
@@ -185,13 +176,11 @@ const createProduct = async (req, res) => {
     // ===== barcode =====
     const bc = normalizeBarcode(barcode);
     if (bc === null) {
-      return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
     }
     if (bc) {
       const exists = await Product.exists({ barcode: bc });
-      if (exists) {
-        return res.status(409).json({ message: "Barcode already exists" });
-      }
+      if (exists) return res.status(409).json({ message: "Barcode already exists" });
     }
 
     // ===== images =====
@@ -207,10 +196,7 @@ const createProduct = async (req, res) => {
     if (!images.length && body.images) {
       let bodyImages = body.images;
       if (typeof bodyImages === "string") bodyImages = [bodyImages];
-      images = bodyImages.map((url) => ({
-        url,
-        public_id: "default_local_image",
-      }));
+      images = bodyImages.map((url) => ({ url, public_id: "default_local_image" }));
     }
 
     const name_i18n = await buildLocalizedField(String(name).trim());
@@ -462,48 +448,37 @@ const updateProduct = async (req, res) => {
     if (typeof isActive !== "undefined")
       product.isActive = !(isActive === "false" || isActive === false);
 
-    // i18n fields
-    if (name) {
-      product.name = await updateLocalizedField(product.name, String(name).trim());
-    }
-    if (description) {
-      product.description = await updateLocalizedField(
-        product.description,
-        String(description).trim()
-      );
-    }
+    // i18n
+    if (name) product.name = await updateLocalizedField(product.name, String(name).trim());
+    if (description)
+      product.description = await updateLocalizedField(product.description, String(description).trim());
 
-    // ===== barcode (set / change / clear) =====
+    // barcode set/change/clear
     if (barcode !== undefined) {
       const bc = normalizeBarcode(barcode);
       if (bc === null) {
-        return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+        return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
       }
       if (!bc) {
         product.barcode = undefined;
       } else {
         const duplicate = await Product.findOne({ _id: { $ne: product._id }, barcode: bc }).lean();
-        if (duplicate) {
-          return res.status(409).json({ message: "Barcode already exists" });
-        }
+        if (duplicate) return res.status(409).json({ message: "Barcode already exists" });
         product.barcode = bc;
       }
     }
 
-    // ===== images =====
+    // images
     let existingImagesParsed = [];
     if (typeof existingImages !== "undefined") {
-      if (Array.isArray(existingImages)) {
-        existingImagesParsed = existingImages;
-      } else if (typeof existingImages === "string") {
+      if (Array.isArray(existingImages)) existingImagesParsed = existingImages;
+      else if (typeof existingImages === "string") {
         const s = existingImages.trim();
         if (s && s !== "undefined" && s !== "null") {
           try {
             const parsed = JSON.parse(s);
             if (Array.isArray(parsed)) existingImagesParsed = parsed;
-            else if (parsed && parsed.url && parsed.public_id) {
-              existingImagesParsed = [parsed];
-            }
+            else if (parsed && parsed.url && parsed.public_id) existingImagesParsed = [parsed];
           } catch {
             if (/^https?:\/\//i.test(s)) {
               existingImagesParsed = [{ url: s, public_id: "default_local_image" }];
@@ -516,11 +491,8 @@ const updateProduct = async (req, res) => {
     }
 
     const shouldRemoveAll = removeAllImages === true || removeAllImages === "true";
-    if (shouldRemoveAll) {
-      product.images = [];
-    } else if (existingImagesParsed.length) {
-      product.images = existingImagesParsed;
-    }
+    if (shouldRemoveAll) product.images = [];
+    else if (existingImagesParsed.length) product.images = existingImagesParsed;
 
     const uploadFromBuffer = (buffer) =>
       new Promise((resolve, reject) => {
@@ -534,14 +506,9 @@ const updateProduct = async (req, res) => {
     let newImages = [];
     if (files.length) {
       const uploadResults = await Promise.all(files.map((f) => uploadFromBuffer(f.buffer)));
-      newImages = uploadResults.map((r) => ({
-        url: r.secure_url || r.url,
-        public_id: r.public_id,
-      }));
+      newImages = uploadResults.map((r) => ({ url: r.secure_url || r.url, public_id: r.public_id }));
     }
-    if (newImages.length) {
-      product.images = (product.images || []).concat(newImages);
-    }
+    if (newImages.length) product.images = (product.images || []).concat(newImages);
 
     await product.save();
 
@@ -581,9 +548,8 @@ const searchProducts = async (req, res) => {
       { "description.en": regex },
       { "description.fi": regex },
     ];
-    if (BARCODE_RE.test(s)) {
-      or.push({ barcode: s });
-    }
+    if (BARCODE_RE.test(s)) or.push({ barcode: s });
+
     const items = await Product.find({ $or: or })
       .limit(30)
       .populate("category")
@@ -629,16 +595,11 @@ const deleteProduct = async (req, res) => {
       } catch (e) {
         console.warn("[deleteProduct] cloudinary delete_resources failed:", e?.message || e);
       }
-    } else {
-      console.log("[deleteProduct] no cloudinary public_ids to delete");
     }
 
     await Product.findByIdAndDelete(id);
 
-    return res.status(200).json({
-      message: "Product deleted",
-      data: { _id: id },
-    });
+    return res.status(200).json({ message: "Product deleted", data: { _id: id } });
   } catch (error) {
     console.error("Error in deleteProduct:", error);
     return res.status(500).json({ message: "Server error" });
@@ -646,7 +607,7 @@ const deleteProduct = async (req, res) => {
 };
 
 /* =========================================================
- * DELETE SINGLE IMAGE (по public_id)
+ * DELETE SINGLE IMAGE
  * =======================================================*/
 const deleteProductImage = async (req, res) => {
   try {
@@ -656,9 +617,7 @@ const deleteProductImage = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(productId)) {
       return res.status(400).json({ message: "Invalid product ID" });
     }
-    if (!rawPublicId) {
-      return res.status(400).json({ message: "publicId is required" });
-    }
+    if (!rawPublicId) return res.status(400).json({ message: "publicId is required" });
 
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
@@ -682,10 +641,7 @@ const deleteProductImage = async (req, res) => {
     });
     await product.save();
 
-    return res.status(200).json({
-      message: "Image deleted",
-      data: { _id: productId, public_id: rawPublicId },
-    });
+    return res.status(200).json({ message: "Image deleted", data: { _id: productId, public_id: rawPublicId } });
   } catch (error) {
     console.error("Error in deleteProductImage:", error);
     return res.status(500).json({ message: "Server error" });
@@ -734,10 +690,7 @@ const updateProductImage = async (req, res) => {
 
     await product.save();
 
-    return res.status(200).json({
-      message: "Image updated",
-      data: { _id: productId, public_id: newPid, url: newUrl },
-    });
+    return res.status(200).json({ message: "Image updated", data: { _id: productId, public_id: newPid, url: newUrl } });
   } catch (error) {
     console.error("Error in updateProductImage:", error);
     return res.status(500).json({ message: "Server error" });
@@ -745,7 +698,7 @@ const updateProductImage = async (req, res) => {
 };
 
 /* =========================================================
- * NEW: IMPORT FROM ERPLY (BY ID)
+ * IMPORT / ENSURE / SYNC
  * =======================================================*/
 const importFromErplyById = async (req, res) => {
   try {
@@ -763,15 +716,12 @@ const importFromErplyById = async (req, res) => {
   }
 };
 
-/* =========================================================
- * NEW: IMPORT FROM ERPLY (BY BARCODE)
- * =======================================================*/
 const importFromErplyByBarcode = async (req, res) => {
   try {
     const { barcode } = req.params;
     if (!barcode) return res.status(400).json({ message: "barcode is required" });
     if (!BARCODE_RE.test(String(barcode))) {
-      return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
     }
 
     const remote = await fetchProductByBarcode(barcode);
@@ -785,14 +735,11 @@ const importFromErplyByBarcode = async (req, res) => {
   }
 };
 
-/* =========================================================
- * NEW: ENSURE BY BARCODE (если нет — создаст из Erply)
- * =======================================================*/
 const ensureByBarcode = async (req, res) => {
   try {
     const { barcode } = req.params;
     if (!BARCODE_RE.test(String(barcode || ""))) {
-      return res.status(400).json({ message: "Invalid barcode: expected 8–14 digits" });
+      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
     }
 
     let doc = await Product.findOne({ barcode }).populate("category").populate("subcategory");
@@ -817,9 +764,6 @@ const ensureByBarcode = async (req, res) => {
   }
 };
 
-/* =========================================================
- * NEW: LIGHT SYNC (обновить только price и stock из Erply)
- * =======================================================*/
 const syncPriceStock = async (req, res) => {
   try {
     const { id } = req.params;
@@ -849,8 +793,6 @@ module.exports = {
   deleteProduct,
   deleteProductImage,
   updateProductImage,
-
-  // NEW:
   importFromErplyById,
   importFromErplyByBarcode,
   ensureByBarcode,
