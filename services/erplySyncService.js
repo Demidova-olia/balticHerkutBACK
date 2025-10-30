@@ -10,56 +10,66 @@ async function uploadRemoteImagesToCloudinary(images) {
       const sourceUrl = img.sourceUrl || img.url;
       if (!sourceUrl) continue;
       const buffer = await downloadImageToBuffer(sourceUrl);
-      const res = await new Promise((resolve, reject) => {
+      const uploaded = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           { folder: "products", resource_type: "image" },
           (err, result) => (err ? reject(err) : resolve(result))
         );
         stream.end(buffer);
       });
-      out.push({ url: res.secure_url || res.url, public_id: res.public_id, sourceUrl });
+      out.push({
+        url: uploaded.secure_url || uploaded.url,
+        public_id: uploaded.public_id,
+        sourceUrl,
+      });
     } catch {
-      // пропускаем неудачные
+
     }
   }
   return out;
 }
 
-// полный upsert из Erply (с перезаливом картинок)
 async function upsertFromErply(erplyProduct) {
   const { mapped, hash } = mapErplyToProductFields(erplyProduct);
 
-  const byErply = await Product.findOne({ erplyId: String(erplyProduct.productID) });
-  const byBarcode = mapped.barcode ? await Product.findOne({ barcode: mapped.barcode }) : null;
+  const byErply = mapped.erplyId
+    ? await Product.findOne({ erplyId: String(mapped.erplyId) })
+    : null;
+
+  const byBarcode = mapped.barcode
+    ? await Product.findOne({ barcode: mapped.barcode })
+    : null;
+
   const existing = byErply || byBarcode;
 
   const cloudImgs = await uploadRemoteImagesToCloudinary(mapped.images || []);
   if (cloudImgs.length) mapped.images = cloudImgs;
 
   if (!existing) {
-    const doc = await Product.create({
+    const created = await Product.create({
       ...mapped,
       erplyHash: hash,
       erplySyncedAt: new Date(),
+      erpSource: "erply",
     });
-    return doc;
+    return created;
   }
 
-  // обновляем цену/остаток всегда
-  existing.price = Number(mapped.price ?? existing.price);
-  existing.stock = Number(mapped.stock ?? existing.stock);
+  if (Number.isFinite(Number(mapped.price))) existing.price = Number(mapped.price);
+  if (Number.isFinite(Number(mapped.stock))) existing.stock = Number(mapped.stock);
 
-  // если контент поменялся — перезаписываем и картинки
   if (existing.erplyHash !== hash) {
-    existing.name = mapped.name || existing.name;
-    existing.description = mapped.description || existing.description;
-    existing.brand = mapped.brand ?? existing.brand;
+    if (mapped.name) existing.name = mapped.name;
+    if (mapped.description) existing.description = mapped.description;
+    if (typeof mapped.brand !== "undefined") existing.brand = mapped.brand;
     if (cloudImgs.length) existing.images = cloudImgs;
     existing.erplyHash = hash;
   }
 
-  existing.erplyId = mapped.erplyId;
-  existing.erplySKU = mapped.erplySKU ?? existing.erplySKU;
+  if (mapped.erplyId) existing.erplyId = String(mapped.erplyId);
+  if (mapped.erplySKU) existing.erplySKU = mapped.erplySKU;
+  if (mapped.barcode) existing.barcode = mapped.barcode;
+
   existing.erpSource = "erply";
   existing.erplySyncedAt = new Date();
 
@@ -67,27 +77,34 @@ async function upsertFromErply(erplyProduct) {
   return existing;
 }
 
-// лёгкий синк: только price/stock
 async function syncPriceStockByErplyId(erplyId) {
   const { fetchProductById } = require("../utils/erplyClient");
   const remote = await fetchProductById(erplyId);
   if (!remote) return null;
 
-  const price = Number(remote.priceWithVAT ?? remote.price ?? 0);
-  const stock = Number(remote.amountInStock ?? 0);
+  const priceFromErp =
+    Number(remote.priceWithVat ?? remote.priceWithVAT ?? remote.price ?? 0);
+  const stockFromErp = Number(remote.amountInStock ?? remote.freeQuantity ?? 0);
 
   const doc = await Product.findOne({ erplyId: String(erplyId) });
   if (!doc) return null;
 
   let changed = false;
-  if (Number.isFinite(price) && price !== doc.price) { doc.price = price; changed = true; }
-  if (Number.isFinite(stock) && stock !== doc.stock) { doc.stock = stock; changed = true; }
+  if (Number.isFinite(priceFromErp) && priceFromErp !== doc.price) {
+    doc.price = priceFromErp;
+    changed = true;
+  }
+  if (Number.isFinite(stockFromErp) && stockFromErp !== doc.stock) {
+    doc.stock = stockFromErp;
+    changed = true;
+  }
 
   if (changed) {
     doc.erplySyncedAt = new Date();
     await doc.save();
   }
-  return { _id: doc._id, changed };
+  return { _id: doc._id, changed, price: doc.price, stock: doc.stock };
 }
 
 module.exports = { upsertFromErply, syncPriceStockByErplyId };
+
