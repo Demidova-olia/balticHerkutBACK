@@ -77,7 +77,6 @@ const productSchema = new mongoose.Schema(
 );
 
 productSchema.index({ barcode: 1 }, { unique: true, sparse: true });
-productSchema.index({ erplyId: 1 }, { unique: true, sparse: true });
 
 const Product = mongoose.model("Product", productSchema);
 module.exports = Product;
