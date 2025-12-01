@@ -19,7 +19,6 @@ function guessSourceLang(s) {
 }
 
 function toLocalized(val) {
-  
   if (val && typeof val === "object" && (val.ru || val.en || val.fi)) {
     const src =
       typeof val._source === "string" && ["ru", "en", "fi"].includes(val._source)
@@ -66,6 +65,22 @@ const categorySchema = new mongoose.Schema(
     image: {
       type: String,
       default: "/images/category.jpg",
+    },
+
+    erplyGroupId: {
+      type: Number,
+      index: true,
+      sparse: true,
+    },
+
+    erplyGroupName: {
+      type: String,
+      trim: true,
+    },
+
+    createdFromErply: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true }

@@ -16,8 +16,23 @@ const productSchema = new mongoose.Schema(
     name: { type: LocalizedStringSchema, required: true },
     description: { type: LocalizedStringSchema, required: true },
     price: { type: Number, required: true, min: 0 },
-    category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
-    subcategory: { type: mongoose.Schema.Types.ObjectId, ref: "Subcategory" },
+
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      required: true,
+    },
+
+    subcategory: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Subcategory",
+    },
+
+    needsCategorization: {
+      type: Boolean,
+      default: false,
+    },
+
     stock: { type: Number, required: true, min: 0 },
 
     barcode: {
@@ -50,6 +65,10 @@ const productSchema = new mongoose.Schema(
 
     erplyId: { type: String, sparse: true },
     erplySKU: { type: String, trim: true },
+
+    erplyProductGroupId: { type: Number },
+    erplyProductGroupName: { type: String, trim: true },
+
     erpSource: { type: String, enum: ["erply", "manual"], default: "manual" },
     erplySyncedAt: { type: Date },
     erplyHash: { type: String },

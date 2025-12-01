@@ -1,7 +1,17 @@
 const Product = require("../models/productModel");
+const Category = require("../models/categoryModel");
 const { mapErplyToProductFields } = require("../utils/erplyMapper");
 const { downloadImageToBuffer } = require("../utils/downloadImageToBuffer");
 const cloudinary = require("cloudinary").v2;
+
+const DEFAULT_CATEGORY_ID = process.env.ERPLY_DEFAULT_CATEGORY_ID || null;
+
+if (!DEFAULT_CATEGORY_ID) {
+  console.warn(
+    "[erplySyncService] ERPLY_DEFAULT_CATEGORY_ID is not set. " +
+      "Products without category info from Erply may fail validation."
+  );
+}
 
 async function uploadRemoteImagesToCloudinary(images) {
   const out = [];
@@ -29,8 +39,125 @@ async function uploadRemoteImagesToCloudinary(images) {
   return out;
 }
 
+async function resolveCategoryFromErply(erplyProduct) {
+  const rawGroupId =
+    erplyProduct.productGroupID ??
+    erplyProduct.groupID ??
+    erplyProduct.productGroupId ??
+    erplyProduct.groupId ??
+    null;
+
+  const groupId = Number(rawGroupId);
+  const hasGroupId = Number.isFinite(groupId);
+
+  const groupNameRaw =
+    erplyProduct.productGroupName ||
+    erplyProduct.groupName ||
+    erplyProduct.productGroup ||
+    "";
+  const groupName =
+    typeof groupNameRaw === "string" && groupNameRaw.trim()
+      ? groupNameRaw.trim()
+      : null;
+
+  if (!hasGroupId && !groupName) {
+    if (DEFAULT_CATEGORY_ID) {
+      return {
+        categoryId: DEFAULT_CATEGORY_ID,
+        needsCategorization: true,
+        groupId: null,
+        groupName: null,
+      };
+    }
+    return {
+      categoryId: null,
+      needsCategorization: true,
+      groupId: null,
+      groupName: null,
+    };
+  }
+
+  if (hasGroupId) {
+    const byId = await Category.findOne({ erplyGroupId: groupId }).lean();
+    if (byId) {
+      return {
+        categoryId: byId._id,
+        needsCategorization: false,
+        groupId,
+        groupName: groupName || byId.erplyGroupName || null,
+      };
+    }
+  }
+
+  if (groupName) {
+    const byName = await Category.findOne({ erplyGroupName: groupName }).lean();
+    if (byName) {
+      return {
+        categoryId: byName._id,
+        needsCategorization: false,
+        groupId: hasGroupId ? groupId : byName.erplyGroupId ?? null,
+        groupName,
+      };
+    }
+  }
+
+  if (groupName) {
+    const created = await Category.create({
+      name: groupName, 
+      erplyGroupId: hasGroupId ? groupId : undefined,
+      erplyGroupName: groupName,
+      createdFromErply: true,
+    });
+
+    return {
+      categoryId: created._id,
+      needsCategorization: false,
+      groupId: hasGroupId ? groupId : null,
+      groupName,
+    };
+  }
+
+  if (DEFAULT_CATEGORY_ID) {
+    return {
+      categoryId: DEFAULT_CATEGORY_ID,
+      needsCategorization: true,
+      groupId: hasGroupId ? groupId : null,
+      groupName,
+    };
+  }
+
+  return {
+    categoryId: null,
+    needsCategorization: true,
+    groupId: hasGroupId ? groupId : null,
+    groupName,
+  };
+}
+
 async function upsertFromErply(erplyProduct) {
+
   const { mapped, hash } = mapErplyToProductFields(erplyProduct);
+
+  const {
+    categoryId,
+    needsCategorization,
+    groupId,
+    groupName,
+  } = await resolveCategoryFromErply(erplyProduct);
+
+  if (!categoryId) {
+    console.error(
+      "[upsertFromErply] Cannot resolve category for Erply product",
+      erplyProduct?.productID || erplyProduct?.id
+    );
+    throw new Error("Failed to resolve category for Erply product");
+  }
+
+  mapped.category = categoryId;
+  mapped.needsCategorization = !!needsCategorization;
+  if (groupId != null) mapped.erplyProductGroupId = groupId;
+  if (groupName) mapped.erplyProductGroupName = groupName;
+
 
   const byErply = mapped.erplyId
     ? await Product.findOne({ erplyId: String(mapped.erplyId) })
@@ -55,8 +182,12 @@ async function upsertFromErply(erplyProduct) {
     return created;
   }
 
-  if (Number.isFinite(Number(mapped.price))) existing.price = Number(mapped.price);
-  if (Number.isFinite(Number(mapped.stock))) existing.stock = Number(mapped.stock);
+  if (Number.isFinite(Number(mapped.price))) {
+    existing.price = Number(mapped.price);
+  }
+  if (Number.isFinite(Number(mapped.stock))) {
+    existing.stock = Number(mapped.stock);
+  }
 
   if (existing.erplyHash !== hash) {
     if (mapped.name) existing.name = mapped.name;
@@ -69,6 +200,12 @@ async function upsertFromErply(erplyProduct) {
   if (mapped.erplyId) existing.erplyId = String(mapped.erplyId);
   if (mapped.erplySKU) existing.erplySKU = mapped.erplySKU;
   if (mapped.barcode) existing.barcode = mapped.barcode;
+
+  if (mapped.category) existing.category = mapped.category;
+  existing.needsCategorization = !!mapped.needsCategorization;
+
+  if (groupId != null) existing.erplyProductGroupId = groupId;
+  if (groupName) existing.erplyProductGroupName = groupName;
 
   existing.erpSource = "erply";
   existing.erplySyncedAt = new Date();
@@ -84,7 +221,9 @@ async function syncPriceStockByErplyId(erplyId) {
 
   const priceFromErp =
     Number(remote.priceWithVat ?? remote.priceWithVAT ?? remote.price ?? 0);
-  const stockFromErp = Number(remote.amountInStock ?? remote.freeQuantity ?? 0);
+  const stockFromErp = Number(
+    remote.amountInStock ?? remote.freeQuantity ?? 0
+  );
 
   const doc = await Product.findOne({ erplyId: String(erplyId) });
   if (!doc) return null;
@@ -107,4 +246,3 @@ async function syncPriceStockByErplyId(erplyId) {
 }
 
 module.exports = { upsertFromErply, syncPriceStockByErplyId };
-
