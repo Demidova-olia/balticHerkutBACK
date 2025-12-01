@@ -131,7 +131,9 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Name is required and must be at least 3 characters" });
     }
     if (!description || String(description).trim().length < 10) {
-      return res.status(400).json({ message: "Description is required and must be at least 10 characters" });
+      return res
+        .status(400)
+        .json({ message: "Description is required and must be at least 10 characters" });
     }
 
     const parsedPrice = Number(price);
@@ -241,9 +243,18 @@ const createProduct = async (req, res) => {
  * =======================================================*/
 const getProducts = async (req, res) => {
   try {
-    const { search, category, subcategory, page = 1, limit = 10 } = req.query;
+    const {
+      search,
+      category,
+      subcategory,
+      page = 1,
+      limit = 10,
+      includeUncategorized,
+    } = req.query;
 
     const query = {};
+
+    // Поиск по имени/описанию/штрихкоду
     if (search) {
       const s = String(search).trim();
       const regex = new RegExp(s, "i");
@@ -260,8 +271,14 @@ const getProducts = async (req, res) => {
       }
       query.$or = or;
     }
+
     if (category) query.category = category;
     if (subcategory) query.subcategory = subcategory;
+
+    // По умолчанию скрываем товары, которые ещё нуждаются в ручной категоризации
+    if (!includeUncategorized) {
+      query.needsCategorization = { $ne: true };
+    }
 
     const skip = (page - 1) * limit;
     const totalProducts = await Product.countDocuments(query);
@@ -424,6 +441,8 @@ const updateProduct = async (req, res) => {
         return res.status(400).json({ message: "Invalid category ID" });
       }
       product.category = category;
+      // если руками поменяли категорию — логично сбросить "нужно категоризировать"
+      product.needsCategorization = false;
     }
 
     const normSub = (val) => {
@@ -641,7 +660,9 @@ const deleteProductImage = async (req, res) => {
     });
     await product.save();
 
-    return res.status(200).json({ message: "Image deleted", data: { _id: productId, public_id: rawPublicId } });
+    return res
+      .status(200)
+      .json({ message: "Image deleted", data: { _id: productId, public_id: rawPublicId } });
   } catch (error) {
     console.error("Error in deleteProductImage:", error);
     return res.status(500).json({ message: "Server error" });
@@ -690,7 +711,10 @@ const updateProductImage = async (req, res) => {
 
     await product.save();
 
-    return res.status(200).json({ message: "Image updated", data: { _id: productId, public_id: newPid, url: newUrl } });
+    return res.status(200).json({
+      message: "Image updated",
+      data: { _id: productId, public_id: newPid, url: newUrl },
+    });
   } catch (error) {
     console.error("Error in updateProductImage:", error);
     return res.status(500).json({ message: "Server error" });
