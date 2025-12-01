@@ -109,6 +109,8 @@ categorySchema.pre("validate", function (next) {
   next();
 });
 
+// ТОЛЬКО текстовый индекс по локализованным полям имени.
+// Никаких unique-индексов по name тут нет.
 categorySchema.index({ "name.en": "text", "name.ru": "text", "name.fi": "text" });
 
 const Category = mongoose.model("Category", categorySchema);

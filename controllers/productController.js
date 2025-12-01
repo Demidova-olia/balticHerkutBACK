@@ -766,12 +766,21 @@ const ensureByBarcode = async (req, res) => {
       return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
     }
 
+    // Query — тут можно чейнить populate
     let doc = await Product.findOne({ barcode }).populate("category").populate("subcategory");
+
+    // Если локально не нашли — тянем из Erply и популятим документ одним await
     if (!doc) {
       const remote = await fetchProductByBarcode(barcode);
       if (!remote) return res.status(404).json({ message: "Erply product not found" });
+
       doc = await upsertFromErply(remote);
-      await doc.populate("category").populate("subcategory");
+
+      // ВАЖНО: в Mongoose 7 doc.populate возвращает Promise → один вызов с массивом путей
+      await doc.populate([
+        { path: "category" },
+        { path: "subcategory" },
+      ]);
     }
 
     const want = pickLangFromReq(req);
