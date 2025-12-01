@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-const ERPLY_BASE = process.env.ERPLY_BASE;     
+const ERPLY_BASE = process.env.ERPLY_BASE;
 const ERPLY_CLIENT_CODE = process.env.ERPLY_CLIENT_CODE;
 const ERPLY_USERNAME = process.env.ERPLY_USERNAME;
 const ERPLY_PASSWORD = process.env.ERPLY_PASSWORD;
@@ -14,15 +14,24 @@ if (!ERPLY_BASE || !ERPLY_CLIENT_CODE || !ERPLY_USERNAME || !ERPLY_PASSWORD) {
 let cachedKey = null;
 let cachedAt = 0;
 
-const DIGIT_BARCODE_RE = /^\d{4,14}$/; 
+const DIGIT_BARCODE_RE = /^\d{4,14}$/;
+
 function extractBarcodeFromErplyRecord(rec) {
   if (!rec) return undefined;
   const candidatesRaw = [
-    rec.ean, rec.EAN, rec.eanCode, rec.ean_code, rec.EANCode,
-    rec.upc, rec.UPC,
-    rec.gtin, rec.GTIN,
-    rec.barcode, rec.Barcode,
-    rec.code2, rec.CODE2,
+    rec.ean,
+    rec.EAN,
+    rec.eanCode,
+    rec.ean_code,
+    rec.EANCode,
+    rec.upc,
+    rec.UPC,
+    rec.gtin,
+    rec.GTIN,
+    rec.barcode,
+    rec.Barcode,
+    rec.code2,
+    rec.CODE2,
   ].filter(Boolean);
 
   for (const v of candidatesRaw) {
@@ -39,7 +48,7 @@ function extractBarcodeFromErplyRecord(rec) {
 
 async function getSessionKey() {
   const now = Date.now();
-  if (cachedKey && now - cachedAt < 15 * 60 * 1000) return cachedKey; 
+  if (cachedKey && now - cachedAt < 15 * 60 * 1000) return cachedKey;
 
   const { data } = await axios.post(
     ERPLY_BASE,
@@ -65,7 +74,9 @@ async function call(request, params = {}) {
     clientCode: ERPLY_CLIENT_CODE,
     request,
     sessionKey,
-    ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
+    ...Object.fromEntries(
+      Object.entries(params).map(([k, v]) => [k, String(v)])
+    ),
   });
   const { data } = await axios.post(ERPLY_BASE, payload);
   if (!data || data.status?.responseStatus !== "ok") {
@@ -78,23 +89,35 @@ async function call(request, params = {}) {
 }
 
 async function fetchProductById(erplyId) {
-  const recs = await call("getProducts", { productID: erplyId, active: 1 });
-  const rec = recs[0] || null;
+  const id = String(erplyId || "").trim();
+  if (!id) return null;
+
+  let recs = await call("getProducts", { productID: id, active: 1 });
+
+  if (!recs || !recs.length) {
+    recs = await call("getProducts", { code: id, active: 1 });
+  }
+
+  const rec = recs && recs[0] ? recs[0] : null;
   if (!rec) return null;
+
   rec.__extractedBarcode = extractBarcodeFromErplyRecord(rec);
   return rec;
 }
 
 async function fetchProductByBarcode(barcode) {
-
-  let recs = await call("getProducts", { ean: barcode, active: 1 }).catch(() => []);
+  let recs = await call("getProducts", { ean: barcode, active: 1 }).catch(
+    () => []
+  );
   if (!recs?.length) {
-
-    recs = await call("getProducts", { code2: barcode, active: 1 }).catch(() => []);
+    recs = await call("getProducts", { code2: barcode, active: 1 }).catch(
+      () => []
+    );
   }
   if (!recs?.length) {
-
-    recs = await call("getProducts", { code: barcode, active: 1 }).catch(() => []);
+    recs = await call("getProducts", { code: barcode, active: 1 }).catch(
+      () => []
+    );
   }
   const rec = recs?.[0] || null;
   if (!rec) return null;
