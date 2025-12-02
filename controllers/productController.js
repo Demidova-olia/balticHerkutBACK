@@ -758,56 +758,159 @@ const importFromErplyByBarcode = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
+
+/**
+ * ENSURE BY BARCODE
+ * - если такой штрих-код уже есть → 409 + локализованное сообщение
+ * - если нет → создаём НОВЫЙ продукт на основе данных ERPLY
+ */
 const ensureByBarcode = async (req, res) => {
   try {
+    const lang = pickLangFromReq(req) || "en";
     const rawBarcode = String(req.params.barcode || "").trim();
 
     const normalized = normalizeBarcode(rawBarcode);
     if (normalized === null || !normalized) {
-      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
+      const msg = {
+        ru: "Неверный штрих-код: ожидается 4–14 цифр",
+        en: "Invalid barcode: expected 4–14 digits",
+        fi: "Virheellinen viivakoodi: odotetaan 4–14 numeroa",
+      };
+      return res.status(400).json({ message: msg[lang] || msg.en });
     }
-
     const barcode = normalized;
 
-    // 1. Тянем товар из ERPLY
-    const remote = await fetchProductByBarcode(barcode);
-    if (!remote) {
-      return res.status(404).json({ message: "Erply product not found" });
+    // 1. Проверяем дубликат по штрих-коду
+    const existing = await Product.findOne({ barcode }).lean();
+    if (existing) {
+      const msgDup = {
+        ru: "Товар с таким штрих-кодом уже существует",
+        en: "A product with this barcode already exists",
+        fi: "Tuote tällä viivakoodilla on jo olemassa",
+      };
+      return res.status(409).json({ message: msgDup[lang] || msgDup.en });
     }
 
-    // 2. Создаём НОВЫЙ продукт (НЕ upsert, НЕ поиск по erplyId!)
+    // 2. Тянем товар из ERPLY
+    const remote = await fetchProductByBarcode(barcode);
+    if (!remote) {
+      const msgNotFound = {
+        ru: "Товар в ERPLY с таким штрих-кодом не найден",
+        en: "Erply product not found for this barcode",
+        fi: "Erply-tuotetta tällä viivakoodilla ei löytynyt",
+      };
+      return res.status(404).json({ message: msgNotFound[lang] || msgNotFound.en });
+    }
+
+    // 3. Категория из ERPLY (group) или заглушка "Imported"
+    const groupId =
+      Number(remote.productGroupID || remote.groupID || remote.productGroupId) || null;
+    const groupName = String(
+      remote.productGroupName || remote.groupName || remote.productGroup || ""
+    ).trim();
+
+    let categoryDoc = null;
+
+    if (groupId) {
+      categoryDoc = await Category.findOne({ erplyGroupId: groupId });
+      if (!categoryDoc) {
+        categoryDoc = await Category.create({
+          name: groupName || {
+            en: "Imported",
+            ru: "Импортировано",
+            fi: "Tuotu",
+          },
+          erplyGroupId: groupId,
+          erplyGroupName: groupName || undefined,
+          createdFromErply: true,
+        });
+      }
+    } else {
+      categoryDoc = await Category.findOne({ slug: "imported" });
+      if (!categoryDoc) {
+        categoryDoc = await Category.create({
+          name: {
+            en: "Imported",
+            ru: "Импортировано",
+            fi: "Tuotu",
+          },
+          createdFromErply: true,
+        });
+      }
+    }
+
+    // 4. Цена и остаток
+    const price =
+      Number(
+        remote.priceWithVat ||
+          remote.priceWithVAT ||
+          remote.price ||
+          remote.priceOriginal ||
+          remote.basePrice
+      ) || 0;
+
+    const stock =
+      Number(
+        remote.amountInStock ||
+          remote.totalInStock ||
+          remote.neto ||
+          remote.quantity
+      ) || 0;
+
+    const nameStr =
+      remote.name || remote.productName || remote.itemName || "Imported product";
+
+    const descStr =
+      remote.longdesc ||
+      remote.longDescription ||
+      remote.description ||
+      "";
+
+    const name_i18n = await buildLocalizedField(String(nameStr).trim());
+    const description_i18n = await buildLocalizedField(String(descStr).trim());
+
+    // 5. Создаём НОВЫЙ продукт
     const newProduct = new Product({
-      name: await buildLocalizedField(remote.name || remote.productName || "Imported product"),
-      description: await buildLocalizedField(remote.longdesc || remote.description || "Imported"),
-      price: Number(remote.price || remote.cost || 0),
-      stock: Number(remote.amountInStock || 0),
-      barcode: barcode,
-      erplyId: String(remote.productID),
-      erplySKU: remote.code || undefined,
-      erplyProductGroupId: remote.groupID || undefined,
-      erplyProductGroupName: remote.groupName || undefined,
+      name: name_i18n,
+      description: description_i18n,
+      price,
+      stock,
+      barcode,
+      category: categoryDoc._id,
+      subcategory: undefined,
+      brand: remote.brandName || undefined,
+      discount: undefined,
+      isFeatured: false,
+      isActive: true,
+      erplyId: remote.productID ? String(remote.productID) : undefined,
+      erplySKU: remote.code || remote.code2 || undefined,
+      erplyProductGroupId: groupId || undefined,
+      erplyProductGroupName: groupName || undefined,
+      erplySyncedAt: new Date(),
       erpSource: "erply",
-      needsCategorization: true,          // чтобы не ломать категорий
+      needsCategorization: true,
     });
 
     await newProduct.save();
 
-    // 3. Отдаём локализованные данные
-    const want = pickLangFromReq(req);
     const data = newProduct.toObject();
     data.name_i18n = data.name;
     data.description_i18n = data.description;
-    data.name = pickLocalized(data.name, want);
-    data.description = pickLocalized(data.description, want);
+    data.name = pickLocalized(data.name, lang);
+    data.description = pickLocalized(data.description, lang);
 
-    return res.status(201).json({ message: "Imported from Erply", data });
+    const msgOk = {
+      ru: "Товар импортирован из ERPLY",
+      en: "Product imported from Erply",
+      fi: "Tuote tuotu Erplystä",
+    };
 
+    return res.status(201).json({ message: msgOk[lang] || msgOk.en, data });
   } catch (e) {
     console.error("ensureByBarcode error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 };
-
 
 const syncPriceStock = async (req, res) => {
   try {
