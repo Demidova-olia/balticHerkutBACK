@@ -46,6 +46,12 @@ function slugify(input) {
     .replace(/^-+|-+$/g, "");
 }
 
+const FALLBACK_NAME = toLocalized({
+  en: "Imported",
+  ru: "Импортировано",
+  fi: "Tuotu",
+});
+
 const categorySchema = new mongoose.Schema(
   {
     name: {
@@ -83,14 +89,24 @@ const categorySchema = new mongoose.Schema(
       default: false,
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    autoIndex: false,
+  }
 );
 
 categorySchema.pre("validate", function (next) {
-  if (!this.name || typeof this.name !== "object") {
-    this.name = toLocalized(this.name);
-  } else {
-    this.name = toLocalized(this.name);
+
+  this.name = toLocalized(this.name);
+
+  const isEmptyName =
+    !this.name?.ru?.trim() &&
+    !this.name?.en?.trim() &&
+    !this.name?.fi?.trim();
+
+
+  if (isEmptyName) {
+    this.name = FALLBACK_NAME;
   }
 
   if (typeof this.description !== "undefined") {
@@ -106,12 +122,15 @@ categorySchema.pre("validate", function (next) {
       `category-${Date.now()}`;
     this.slug = slugify(base);
   }
+
   next();
 });
 
-// ТОЛЬКО текстовый индекс по локализованным полям имени.
-// Никаких unique-индексов по name тут нет.
-categorySchema.index({ "name.en": "text", "name.ru": "text", "name.fi": "text" });
+categorySchema.index({
+  "name.en": "text",
+  "name.ru": "text",
+  "name.fi": "text",
+});
 
 const Category = mongoose.model("Category", categorySchema);
 module.exports = Category;
