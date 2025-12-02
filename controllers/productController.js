@@ -758,12 +758,10 @@ const importFromErplyByBarcode = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
-
 const ensureByBarcode = async (req, res) => {
   try {
     const rawBarcode = String(req.params.barcode || "").trim();
 
-    // Нормализуем и валидируем штрих-код (4–14 цифр)
     const normalized = normalizeBarcode(rawBarcode);
     if (normalized === null || !normalized) {
       return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
@@ -771,60 +769,45 @@ const ensureByBarcode = async (req, res) => {
 
     const barcode = normalized;
 
-    // 1) Пытаемся найти уже существующий продукт с таким штрих-кодом
-    let doc = await Product.findOne({ barcode })
-      .populate("category")
-      .populate("subcategory");
-
-    // 2) Если не нашли — тянем из Erply и апсертим по erplyId
-    if (!doc) {
-      const remote = await fetchProductByBarcode(barcode);
-      if (!remote) {
-        return res.status(404).json({ message: "Erply product not found" });
-      }
-
-      // upsert по erplyId (один ERPLY-товар = один Product)
-      doc = await upsertFromErply(remote);
-
-      // Пытаемся привязать к нему ВВЕДЁННЫЙ штрих-код
-      // (чтобы в БД был именно тот код, который ты ввела)
-      const duplicate = await Product.findOne({
-        _id: { $ne: doc._id },
-        barcode,
-      }).lean();
-
-      if (!duplicate) {
-        doc.barcode = barcode;
-        await doc.save();
-      } else {
-        console.warn(
-          "[ensureByBarcode] barcode %s already used by product %s, keeping existing barcode %s",
-          barcode,
-          duplicate._id,
-          doc.barcode
-        );
-      }
-
-      // Mongoose 7: populate через один await
-      await doc.populate([
-        { path: "category" },
-        { path: "subcategory" },
-      ]);
+    // 1. Тянем товар из ERPLY
+    const remote = await fetchProductByBarcode(barcode);
+    if (!remote) {
+      return res.status(404).json({ message: "Erply product not found" });
     }
 
+    // 2. Создаём НОВЫЙ продукт (НЕ upsert, НЕ поиск по erplyId!)
+    const newProduct = new Product({
+      name: await buildLocalizedField(remote.name || remote.productName || "Imported product"),
+      description: await buildLocalizedField(remote.longdesc || remote.description || "Imported"),
+      price: Number(remote.price || remote.cost || 0),
+      stock: Number(remote.amountInStock || 0),
+      barcode: barcode,
+      erplyId: String(remote.productID),
+      erplySKU: remote.code || undefined,
+      erplyProductGroupId: remote.groupID || undefined,
+      erplyProductGroupName: remote.groupName || undefined,
+      erpSource: "erply",
+      needsCategorization: true,          // чтобы не ломать категорий
+    });
+
+    await newProduct.save();
+
+    // 3. Отдаём локализованные данные
     const want = pickLangFromReq(req);
-    const data = doc.toObject();
+    const data = newProduct.toObject();
     data.name_i18n = data.name;
     data.description_i18n = data.description;
     data.name = pickLocalized(data.name, want);
     data.description = pickLocalized(data.description, want);
 
-    return res.status(200).json({ message: "OK", data });
+    return res.status(201).json({ message: "Imported from Erply", data });
+
   } catch (e) {
     console.error("ensureByBarcode error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 
 const syncPriceStock = async (req, res) => {
   try {
