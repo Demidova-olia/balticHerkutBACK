@@ -761,22 +761,51 @@ const importFromErplyByBarcode = async (req, res) => {
 
 const ensureByBarcode = async (req, res) => {
   try {
-    const { barcode } = req.params;
-    if (!BARCODE_RE.test(String(barcode || ""))) {
+    const rawBarcode = String(req.params.barcode || "").trim();
+
+    // Нормализуем и валидируем штрих-код (4–14 цифр)
+    const normalized = normalizeBarcode(rawBarcode);
+    if (normalized === null || !normalized) {
       return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
     }
 
-    // Query — тут можно чейнить populate
-    let doc = await Product.findOne({ barcode }).populate("category").populate("subcategory");
+    const barcode = normalized;
 
-    // Если локально не нашли — тянем из Erply и популятим документ одним await
+    // 1) Пытаемся найти уже существующий продукт с таким штрих-кодом
+    let doc = await Product.findOne({ barcode })
+      .populate("category")
+      .populate("subcategory");
+
+    // 2) Если не нашли — тянем из Erply и апсертим по erplyId
     if (!doc) {
       const remote = await fetchProductByBarcode(barcode);
-      if (!remote) return res.status(404).json({ message: "Erply product not found" });
+      if (!remote) {
+        return res.status(404).json({ message: "Erply product not found" });
+      }
 
+      // upsert по erplyId (один ERPLY-товар = один Product)
       doc = await upsertFromErply(remote);
 
-      // ВАЖНО: в Mongoose 7 doc.populate возвращает Promise → один вызов с массивом путей
+      // Пытаемся привязать к нему ВВЕДЁННЫЙ штрих-код
+      // (чтобы в БД был именно тот код, который ты ввела)
+      const duplicate = await Product.findOne({
+        _id: { $ne: doc._id },
+        barcode,
+      }).lean();
+
+      if (!duplicate) {
+        doc.barcode = barcode;
+        await doc.save();
+      } else {
+        console.warn(
+          "[ensureByBarcode] barcode %s already used by product %s, keeping existing barcode %s",
+          barcode,
+          duplicate._id,
+          doc.barcode
+        );
+      }
+
+      // Mongoose 7: populate через один await
       await doc.populate([
         { path: "category" },
         { path: "subcategory" },
