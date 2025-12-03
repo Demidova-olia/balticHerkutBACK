@@ -1,26 +1,50 @@
 // services/erplySyncService.js
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
-const { mapErplyToProductFields } = require("../utils/erplyMapper");
 const { downloadImageToBuffer } = require("../utils/downloadImageToBuffer");
+const { buildLocalizedField } = require("../utils/translator");
 const cloudinary = require("cloudinary").v2;
 
-/**
- * Если хочешь жёстко указать категорию для всех ERPLY-товаров —
- * просто положи её _id в .env как ERPLY_DEFAULT_CATEGORY_ID
- */
 const DEFAULT_CATEGORY_ID = process.env.ERPLY_DEFAULT_CATEGORY_ID || null;
 
-if (!DEFAULT_CATEGORY_ID) {
-  console.warn(
-    "[erplySyncService] ERPLY_DEFAULT_CATEGORY_ID is not set — " +
-      "will try to use category with slug 'imported'."
-  );
+/* ============================================================================
+ * Helpers: barcode / category / images
+ * ========================================================================== */
+
+// 4–14 цифр
+const BARCODE_RE = /^\d{4,14}$/;
+
+function normalizeBarcode(raw) {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined;
+  if (!BARCODE_RE.test(s)) return undefined;
+  return s;
 }
 
-/* ============================================================================
- * Cloudinary helpers
- * ========================================================================== */
+/**
+ * Получаем id категории:
+ * 1) если выставлен ERPLY_DEFAULT_CATEGORY_ID → используем его
+ * 2) иначе ищем/создаём категорию со slug "imported"
+ */
+async function ensureDefaultCategoryId() {
+  if (DEFAULT_CATEGORY_ID) return DEFAULT_CATEGORY_ID;
+
+  let cat = await Category.findOne({ slug: "imported" });
+  if (cat) return String(cat._id);
+
+  cat = await Category.create({
+    name: {
+      en: "Imported",
+      ru: "Импортировано",
+      fi: "Tuotu",
+    },
+    slug: "imported",
+    createdFromErply: true,
+  });
+
+  return String(cat._id);
+}
 
 async function uploadRemoteImagesToCloudinary(images) {
   const out = [];
@@ -30,7 +54,6 @@ async function uploadRemoteImagesToCloudinary(images) {
       if (!sourceUrl) continue;
 
       const buffer = await downloadImageToBuffer(sourceUrl);
-
       const uploaded = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           { folder: "products", resource_type: "image" },
@@ -45,136 +68,232 @@ async function uploadRemoteImagesToCloudinary(images) {
         sourceUrl,
       });
     } catch (e) {
-      console.warn("[erplySyncService] uploadRemoteImagesToCloudinary failed:", e?.message);
+      console.warn("[erplySync] image upload failed:", e?.message || e);
     }
   }
   return out;
 }
 
-/* ============================================================================
- * Category resolver: ВСЕ ERPLY-товары → ОДНА категория
- * ========================================================================== */
+/**
+ * Собираем возможные ссылки на картинки из Erply-объекта
+ */
+function extractImageCandidates(erplyProduct) {
+  const urls = new Set();
 
-let importedCategoryIdCache = null;
+  [
+    erplyProduct.pictureURL,
+    erplyProduct.pictureUrl,
+    erplyProduct.imageURL,
+    erplyProduct.imageUrl,
+    erplyProduct.image,
+    erplyProduct.largeImage,
+    erplyProduct.smallImage,
+  ]
+    .filter(Boolean)
+    .map(String)
+    .map((s) => s.trim())
+    .filter((s) => /^https?:\/\//i.test(s))
+    .forEach((u) => urls.add(u));
 
-async function getImportedCategoryId() {
-  // 1) Явно заданная категория из .env
-  if (DEFAULT_CATEGORY_ID) return DEFAULT_CATEGORY_ID;
-
-  // 2) Категория со slug: "imported"
-  if (!importedCategoryIdCache) {
-    const cat = await Category.findOne({ slug: "imported" }).lean();
-    if (!cat) {
-      throw new Error(
-        "erplySyncService: category with slug 'imported' not found " +
-          "and ERPLY_DEFAULT_CATEGORY_ID is not set"
-      );
-    }
-    importedCategoryIdCache = String(cat._id);
-  }
-  return importedCategoryIdCache;
+  return Array.from(urls).map((u) => ({ sourceUrl: u }));
 }
 
 /**
- * Сейчас erplyProduct нам почти не нужен — все ERPLY-товары
- * летят в одну категорию.
+ * Вытаскиваем нужные поля из Erply-ответа:
+ *  - name / description
+ *  - price
+ *  - stock
+ *  - barcode
+ *  - erplyId / erplySKU
  */
-async function resolveCategoryFromErply(/* erplyProduct */) {
-  const categoryId = await getImportedCategoryId();
+function mapErplyMinimal(erplyProduct) {
+  if (!erplyProduct || typeof erplyProduct !== "object") {
+    throw new Error("Invalid Erply product payload");
+  }
+
+  const erplyId =
+    erplyProduct.productID ??
+    erplyProduct.productId ??
+    erplyProduct.id ??
+    null;
+
+  const erplySKU =
+    erplyProduct.code2 ??
+    erplyProduct.code ??
+    erplyProduct.sku ??
+    null;
+
+  const barcodeRaw =
+    erplyProduct.EAN ??
+    erplyProduct.ean ??
+    erplyProduct.eanCode ??
+    erplyProduct.barcode ??
+    erplyProduct.code2 ??
+    erplyProduct.code ??
+    null;
+
+  const barcode = normalizeBarcode(barcodeRaw);
+
+  const nameStr =
+    erplyProduct.name ||
+    erplyProduct.productName ||
+    erplyProduct.itemName ||
+    erplyProduct.fullName ||
+    "Imported product";
+
+  const descStr =
+    erplyProduct.longdesc ||
+    erplyProduct.longDescription ||
+    erplyProduct.description ||
+    "";
+
+  const price =
+    Number(
+      erplyProduct.priceWithVat ??
+        erplyProduct.priceWithVAT ??
+        erplyProduct.price ??
+        erplyProduct.priceOriginal ??
+        erplyProduct.basePrice
+    ) || 0;
+
+  const stock =
+    Number(
+      erplyProduct.amountInStock ??
+        erplyProduct.totalInStock ??
+        erplyProduct.neto ??
+        erplyProduct.quantity ??
+        erplyProduct.freeQuantity
+    ) || 0;
+
+  const brand =
+    erplyProduct.brandName ||
+    erplyProduct.brand ||
+    undefined;
+
   return {
-    categoryId,
-    needsCategorization: false,
-    groupId: null,
-    groupName: null,
+    erplyId: erplyId ? String(erplyId) : undefined,
+    erplySKU: erplySKU || undefined,
+    barcode,
+    nameStr: String(nameStr).trim(),
+    descStr: String(descStr || "").trim(),
+    price,
+    stock,
+    brand,
   };
 }
 
 /* ============================================================================
- * UPSERT from ERPLY
+ * UPSERT FROM ERPLY
  * ========================================================================== */
 
+/**
+ * upsertFromErply(erplyProduct)
+ *
+ * Создаёт или обновляет товар:
+ *  - ищет СНАЧАЛА по barcode, потом по erplyId
+ *  - пишет только name/description/price/stock/barcode/brand + служебные поля
+ *  - категория всегда одна (Imported / из env)
+ */
 async function upsertFromErply(erplyProduct) {
-  // mapErplyToProductFields должен вытащить:
-  // - barcode
-  // - name
-  // - price
-  // - stock
-  // - + опционально description, brand, images, erplyId, erplySKU
-  const { mapped, hash } = mapErplyToProductFields(erplyProduct);
+  const {
+    erplyId,
+    erplySKU,
+    barcode,
+    nameStr,
+    descStr,
+    price,
+    stock,
+    brand,
+  } = mapErplyMinimal(erplyProduct);
 
-  const { categoryId, needsCategorization, groupId, groupName } =
-    await resolveCategoryFromErply(erplyProduct);
+  const categoryId = await ensureDefaultCategoryId();
 
-  if (!categoryId) {
-    console.error(
-      "[upsertFromErply] Cannot resolve category for Erply product",
-      erplyProduct?.productID || erplyProduct?.id
-    );
-    throw new Error("Failed to resolve category for Erply product");
+  const name_i18n = await buildLocalizedField(nameStr);
+  const description_i18n = await buildLocalizedField(descStr);
+
+  const imageCandidates = extractImageCandidates(erplyProduct);
+  const cloudImages = await uploadRemoteImagesToCloudinary(imageCandidates);
+
+  // --- поиск существующего товара ---
+  let existing = null;
+
+  if (barcode) {
+    existing = await Product.findOne({ barcode });
+  }
+  if (!existing && erplyId) {
+    existing = await Product.findOne({ erplyId });
   }
 
-  mapped.category = categoryId;
-  mapped.needsCategorization = !!needsCategorization;
-  if (groupId != null) mapped.erplyProductGroupId = groupId;
-  if (groupName) mapped.erplyProductGroupName = groupName;
-
-  // Ищем существующий товар по erplyId или по штрих-коду
-  const byErply = mapped.erplyId
-    ? await Product.findOne({ erplyId: String(mapped.erplyId) })
-    : null;
-
-  const byBarcode = mapped.barcode
-    ? await Product.findOne({ barcode: mapped.barcode })
-    : null;
-
-  const existing = byErply || byBarcode;
-
-  // Загружаем картинки, если есть
-  const cloudImgs = await uploadRemoteImagesToCloudinary(mapped.images || []);
-  if (cloudImgs.length) mapped.images = cloudImgs;
-
-  /* ---------- СОЗДАНИЕ НОВОГО ПРОДУКТА ---------- */
+  // ---------- CREATE ----------
   if (!existing) {
-    const created = await Product.create({
-      ...mapped,
-      erplyHash: hash,
-      erplySyncedAt: new Date(),
+    const doc = await Product.create({
+      name: name_i18n,
+      description: description_i18n,
+      price,
+      stock,
+      barcode: barcode || undefined,
+      category: categoryId,
+      subcategory: undefined,
+      images: cloudImages,
+      brand: brand || undefined,
+      discount: undefined,
+      isFeatured: false,
+      isActive: true,
+      averageRating: 0,
+      needsCategorization: true,
+
+      erplyId: erplyId || undefined,
+      erplySKU: erplySKU || undefined,
       erpSource: "erply",
+      erplyProductGroupId:
+        erplyProduct.productGroupID ??
+        erplyProduct.groupID ??
+        erplyProduct.productGroupId ??
+        erplyProduct.groupId ??
+        undefined,
+      erplyProductGroupName:
+        erplyProduct.productGroupName ??
+        erplyProduct.groupName ??
+        erplyProduct.productGroup ??
+        undefined,
+      erplySyncedAt: new Date(),
     });
-    return created;
+
+    return doc;
   }
 
-  /* ---------- ОБНОВЛЕНИЕ СУЩЕСТВУЮЩЕГО ПРОДУКТА ---------- */
+  // ---------- UPDATE ----------
+  existing.name = name_i18n;
+  existing.description = description_i18n;
+  existing.price = price;
+  existing.stock = stock;
 
-  // 1) Всегда приводим цену и остаток к данным из ERPLY
-  if (Number.isFinite(Number(mapped.price))) {
-    existing.price = Number(mapped.price);
+  if (barcode) existing.barcode = barcode;
+  if (brand !== undefined) existing.brand = brand || undefined;
+  existing.category = categoryId;
+  existing.needsCategorization = true;
+
+  if (cloudImages.length) {
+    existing.images = cloudImages;
   }
-  if (Number.isFinite(Number(mapped.stock))) {
-    existing.stock = Number(mapped.stock);
-  }
 
-  // 2) Всегда обновляем базовые поля: название и штрих-код
-  if (mapped.name) existing.name = mapped.name;
-  if (mapped.barcode) existing.barcode = mapped.barcode;
+  if (erplyId) existing.erplyId = erplyId;
+  if (erplySKU) existing.erplySKU = erplySKU;
 
-  // 3) Описание / бренд / картинки — берём из ERPLY, если пришли
-  if (mapped.description) existing.description = mapped.description;
-  if (typeof mapped.brand !== "undefined") existing.brand = mapped.brand;
-  if (cloudImgs.length) existing.images = cloudImgs;
-
-  // 4) Служебные поля ERPLY
-  if (mapped.erplyId) existing.erplyId = String(mapped.erplyId);
-  if (mapped.erplySKU) existing.erplySKU = mapped.erplySKU;
-
-  if (mapped.category) existing.category = mapped.category;
-  existing.needsCategorization = !!mapped.needsCategorization;
-
-  if (groupId != null) existing.erplyProductGroupId = groupId;
-  if (groupName) existing.erplyProductGroupName = groupName;
-
-  existing.erplyHash = hash;
   existing.erpSource = "erply";
+  existing.erplyProductGroupId =
+    erplyProduct.productGroupID ??
+    erplyProduct.groupID ??
+    erplyProduct.productGroupId ??
+    erplyProduct.groupId ??
+    existing.erplyProductGroupId;
+
+  existing.erplyProductGroupName =
+    erplyProduct.productGroupName ??
+    erplyProduct.groupName ??
+    erplyProduct.productGroup ??
+    existing.erplyProductGroupName;
+
   existing.erplySyncedAt = new Date();
 
   await existing.save();
@@ -182,7 +301,7 @@ async function upsertFromErply(erplyProduct) {
 }
 
 /* ============================================================================
- * Лёгкая синхронизация только цены и остатка
+ * LIGHT SYNC (price + stock)
  * ========================================================================== */
 
 async function syncPriceStockByErplyId(erplyId) {
@@ -190,13 +309,23 @@ async function syncPriceStockByErplyId(erplyId) {
   const remote = await fetchProductById(erplyId);
   if (!remote) return null;
 
-  const priceFromErp = Number(
-    remote.priceWithVat ?? remote.priceWithVAT ?? remote.price ?? 0
-  );
+  const priceFromErp =
+    Number(
+      remote.priceWithVat ??
+        remote.priceWithVAT ??
+        remote.price ??
+        remote.priceOriginal ??
+        remote.basePrice
+    ) || 0;
 
-  const stockFromErp = Number(
-    remote.amountInStock ?? remote.totalInStock ?? remote.freeQuantity ?? 0
-  );
+  const stockFromErp =
+    Number(
+      remote.amountInStock ??
+        remote.totalInStock ??
+        remote.neto ??
+        remote.quantity ??
+        remote.freeQuantity
+    ) || 0;
 
   const doc = await Product.findOne({ erplyId: String(erplyId) });
   if (!doc) return null;
@@ -207,7 +336,6 @@ async function syncPriceStockByErplyId(erplyId) {
     doc.price = priceFromErp;
     changed = true;
   }
-
   if (Number.isFinite(stockFromErp) && stockFromErp !== doc.stock) {
     doc.stock = stockFromErp;
     changed = true;
