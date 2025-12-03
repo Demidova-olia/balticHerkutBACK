@@ -776,9 +776,6 @@ const importFromErplyByBarcode = async (req, res) => {
   }
 };
 
-/**
- * ENSURE BY BARCODE (используем одну заранее созданную категорию "imported")
- */
 const ensureByBarcode = async (req, res) => {
   try {
     const lang = pickLangFromReq(req) || "en";
@@ -795,7 +792,6 @@ const ensureByBarcode = async (req, res) => {
     }
     const barcode = normalized;
 
-    // 1. Проверяем дубликат по штрих-коду
     const existing = await Product.findOne({ barcode }).lean();
     if (existing) {
       const msgDup = {
@@ -806,8 +802,19 @@ const ensureByBarcode = async (req, res) => {
       return res.status(409).json({ message: msgDup[lang] || msgDup.en });
     }
 
-    // 2. Тянем товар из ERPLY
-    const remote = await fetchProductByBarcode(barcode);
+    let remote;
+    try {
+      remote = await fetchProductByBarcode(barcode);
+    } catch (e) {
+      console.error("ensureByBarcode: fetchProductByBarcode error:", e?.message || e);
+      const msgErplyDown = {
+        ru: "Ошибка обращения к ERPLY. Попробуйте позже.",
+        en: "Failed to contact Erply. Please try again later.",
+        fi: "Virhe yhteydessä Erplyyn. Yritä myöhemmin uudelleen.",
+      };
+      return res.status(502).json({ message: msgErplyDown[lang] || msgErplyDown.en });
+    }
+
     if (!remote) {
       const msgNotFound = {
         ru: "Товар в ERPLY с таким штрих-кодом не найден",
@@ -817,16 +824,33 @@ const ensureByBarcode = async (req, res) => {
       return res.status(404).json({ message: msgNotFound[lang] || msgNotFound.en });
     }
 
-    // 3. Берём заранее созданную категорию "imported"
-    const categoryDoc = await getImportedCategory();
+    let categoryDoc = await Category.findOne({ slug: "imported" });
     if (!categoryDoc) {
-      console.error("ensureByBarcode: imported category not found");
-      return res
-        .status(500)
-        .json({ message: "Imported category is missing in DB. Please create it." });
+      try {
+        categoryDoc = await Category.create({
+          name: {
+            en: "Imported",
+            ru: "Импортировано",
+            fi: "Tuotu",
+          },
+          slug: "imported",
+          createdFromErply: true,
+        });
+      } catch (e) {
+        if (e?.code === 11000) {
+          categoryDoc = await Category.findOne({ slug: "imported" });
+        } else {
+          console.error("ensureByBarcode: create imported category error:", e);
+          return res.status(500).json({ message: "Failed to prepare imported category" });
+        }
+      }
     }
 
-    // 4. Цена и остаток
+    if (!categoryDoc) {
+      console.error("ensureByBarcode: imported category still not found");
+      return res.status(500).json({ message: "Imported category is not configured" });
+    }
+
     const price =
       Number(
         remote.priceWithVat ||
@@ -856,44 +880,47 @@ const ensureByBarcode = async (req, res) => {
     const name_i18n = await buildLocalizedField(String(nameStr).trim());
     const description_i18n = await buildLocalizedField(String(descStr).trim());
 
-    // 5. Картинка (если есть)
-    const images = [];
-    const imgUrl =
-      remote.pictureURL ||
-      remote.pictureUrl ||
-      remote.imageURL ||
-      remote.imageUrl ||
-      (remote.image && remote.image.url);
-    if (imgUrl) {
-      images.push({
-        url: imgUrl,
-        public_id: "default_local_image",
-        sourceUrl: imgUrl,
+    let newProduct;
+    try {
+      newProduct = new Product({
+        name: name_i18n,
+        description: description_i18n,
+        price,
+        stock,
+        barcode,
+        category: categoryDoc._id,
+        subcategory: undefined,
+        brand: remote.brandName || undefined,
+        discount: undefined,
+        isFeatured: false,
+        isActive: true,
+        erplyId: remote.productID ? String(remote.productID) : undefined,
+        erplySKU: remote.code || remote.code2 || undefined,
+        erplyProductGroupId:
+          Number(remote.productGroupID || remote.groupID || remote.productGroupId) || undefined,
+        erplyProductGroupName:
+          String(
+            remote.productGroupName || remote.groupName || remote.productGroup || ""
+          ).trim() || undefined,
+        erplySyncedAt: new Date(),
+        erpSource: "erply",
+        needsCategorization: true,
       });
+
+      await newProduct.save();
+    } catch (e) {
+      if (e && e.code === 11000 && e.keyPattern && e.keyPattern.barcode) {
+        const msgDup = {
+          ru: "Товар с таким штрих-кодом уже существует",
+          en: "A product with this barcode already exists",
+          fi: "Tuote tällä viivakoodilla on jo olemassa",
+        };
+        return res.status(409).json({ message: msgDup[lang] || msgDup.en });
+      }
+
+      console.error("ensureByBarcode: save product error:", e);
+      return res.status(500).json({ message: "Failed to create product from Erply" });
     }
-
-    // 6. Создаём НОВЫЙ продукт
-    const newProduct = new Product({
-      name: name_i18n,
-      description: description_i18n,
-      price,
-      stock,
-      barcode,
-      images,
-      category: categoryDoc._id,
-      subcategory: undefined,
-      brand: remote.brandName || undefined,
-      discount: undefined,
-      isFeatured: false,
-      isActive: true,
-      erplyId: remote.productID ? String(remote.productID) : undefined,
-      erplySKU: remote.code || remote.code2 || undefined,
-      erpSource: "erply",
-      erplySyncedAt: new Date(),
-      needsCategorization: true,
-    });
-
-    await newProduct.save();
 
     const data = newProduct.toObject();
     data.name_i18n = data.name;
@@ -909,10 +936,11 @@ const ensureByBarcode = async (req, res) => {
 
     return res.status(201).json({ message: msgOk[lang] || msgOk.en, data });
   } catch (e) {
-    console.error("ensureByBarcode error:", e);
+    console.error("ensureByBarcode error (outer catch):", e);
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 
 const syncPriceStock = async (req, res) => {
   try {
