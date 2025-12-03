@@ -1,105 +1,987 @@
-const express = require("express");
+const Product = require("../models/productModel");
+const Category = require("../models/categoryModel");
+const Subcategory = require("../models/subcategoryModel");
+const cloudinary = require("cloudinary").v2;
+const mongoose = require("mongoose");
+const { uploadToCloudinary } = require("../utils/uploadToCloudinary");
 
 const {
+  buildLocalizedField,
+  updateLocalizedField,
+  pickLangFromReq,
+  pickLocalized,
+} = require("../utils/translator");
+
+// Erply helpers
+const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
+const { upsertFromErply, syncPriceStockByErplyId } = require("../services/erplySyncService");
+
+// === barcode: 4–14 digits ===
+const BARCODE_RE = /^\d{4,14}$/;
+
+function normalizeBarcode(raw) {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined;
+  if (!BARCODE_RE.test(s)) return null;
+  return s;
+}
+
+/** ===== Cloudinary helpers ===== */
+function isCloudinaryUrl(url) {
+  return typeof url === "string" && /res\.cloudinary\.com\/.+\/image\/upload\//.test(url);
+}
+function extractPublicIdFromUrl(url) {
+  if (!isCloudinaryUrl(url)) return null;
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split("/");
+    const uploadIdx = parts.indexOf("upload");
+    if (uploadIdx === -1) return null;
+    const tail = parts.slice(uploadIdx + 1);
+    const noVersion = tail[0] && /^v\d+$/.test(tail[0]) ? tail.slice(1) : tail;
+    if (!noVersion.length) return null;
+    const last = noVersion[noVersion.length - 1];
+    const withoutExt = last.replace(/\.[a-zA-Z0-9]+$/, "");
+    const publicIdParts = noVersion.slice(0, -1).concat(withoutExt);
+    return publicIdParts.join("/");
+  } catch {
+    return null;
+  }
+}
+function collectPublicIdsFromImages(images) {
+  const ids = [];
+  for (const img of Array.isArray(images) ? images : []) {
+    if (!img) continue;
+    if (typeof img === "string") {
+      const pid = extractPublicIdFromUrl(img);
+      if (pid) ids.push(pid);
+      continue;
+    }
+    if (img.public_id && typeof img.public_id === "string") {
+      ids.push(img.public_id);
+    } else if (img.url) {
+      const pid = extractPublicIdFromUrl(img.url);
+      if (pid) ids.push(pid);
+    }
+  }
+  return ids.filter((pid) => pid && pid !== "default_local_image");
+}
+async function deleteCloudinaryResources(publicIds) {
+  if (!publicIds.length) return { deleted: {} };
+  return await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
+}
+
+/** ===== Imported category helper ===== */
+const IMPORTED_NAME = {
+  en: "Imported",
+  ru: "Импортировано",
+  fi: "Tuotu",
+};
+
+async function findOrCreateImportedCategory() {
+  let categoryDoc =
+    (await Category.findOne({
+      $or: [
+        { slug: "imported" },
+        { "name.en": IMPORTED_NAME.en },
+        { "name.ru": IMPORTED_NAME.ru },
+        { "name.fi": IMPORTED_NAME.fi },
+      ],
+    })) || null;
+
+  if (!categoryDoc) {
+    try {
+      categoryDoc = await Category.create({
+        name: IMPORTED_NAME,
+        slug: "imported",
+        createdFromErply: true,
+      });
+    } catch (e) {
+      if (e && e.code === 11000 && e.keyPattern && e.keyPattern.name) {
+        // кто-то уже успел создать категорию — просто находим её
+        categoryDoc =
+          (await Category.findOne({
+            $or: [
+              { slug: "imported" },
+              { "name.en": IMPORTED_NAME.en },
+              { "name.ru": IMPORTED_NAME.ru },
+              { "name.fi": IMPORTED_NAME.fi },
+            ],
+          })) || categoryDoc;
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  return categoryDoc;
+}
+
+/* =========================================================
+ * CREATE
+ * =======================================================*/
+const createProduct = async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    // Если пришёл erplyId или barcode — пробуем сразу импортировать и создать
+    if (body.erplyId || body.barcode) {
+      try {
+        const remote = body.erplyId
+          ? await fetchProductById(body.erplyId)
+          : await fetchProductByBarcode(body.barcode);
+
+        if (!remote) {
+          return res
+            .status(404)
+            .json({ message: "Erply product not found for provided ID/barcode" });
+        }
+
+        let doc = await upsertFromErply(remote);
+        if (typeof body.brand !== "undefined") doc.brand = String(body.brand).trim();
+        if (typeof body.discount !== "undefined") doc.discount = Number(body.discount);
+        if (typeof body.isFeatured !== "undefined")
+          doc.isFeatured = body.isFeatured === "true" || body.isFeatured === true;
+        if (typeof body.isActive !== "undefined")
+          doc.isActive = !(body.isActive === "false" || body.isActive === false);
+
+        await doc.save();
+
+        const want = pickLangFromReq(req);
+        const data = doc.toObject();
+        data.name_i18n = data.name;
+        data.description_i18n = data.description;
+        data.name = pickLocalized(data.name, want);
+        data.description = pickLocalized(data.description, want);
+
+        return res.status(201).json({ message: "Product created from Erply", data });
+      } catch (e) {
+        console.warn("createProduct: erply import failed, fallback to manual create", e?.message);
+      }
+    }
+
+    const {
+      name,
+      description,
+      price,
+      category,
+      subcategory,
+      stock,
+      brand,
+      discount,
+      isFeatured,
+      isActive,
+      barcode,
+    } = body;
+
+    if (!name || String(name).trim().length < 3) {
+      return res
+        .status(400)
+        .json({ message: "Name is required and must be at least 3 characters" });
+    }
+    if (!description || String(description).trim().length < 10) {
+      return res
+        .status(400)
+        .json({ message: "Description is required and must be at least 10 characters" });
+    }
+
+    const parsedPrice = Number(price);
+    if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+      return res.status(400).json({ message: "Price must be a number >= 0" });
+    }
+
+    const parsedStock = Number.parseInt(stock, 10);
+    if (!Number.isFinite(parsedStock) || parsedStock < 0) {
+      return res.status(400).json({ message: "Stock must be a non-negative integer" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(category)) {
+      return res.status(400).json({ message: "Invalid category ID" });
+    }
+    const categoryDoc = await Category.findById(category);
+    if (!categoryDoc) {
+      return res.status(400).json({ message: "Category not found" });
+    }
+
+    const normSub = (val) => {
+      if (val == null) return undefined;
+      if (typeof val !== "string") return val;
+      const t = val.trim().toLowerCase();
+      if (!t || t === "undefined" || t === "null") return undefined;
+      return val;
+    };
+    let subcategoryDoc = null;
+    const normalizedSubcategory = normSub(subcategory);
+    if (normalizedSubcategory) {
+      if (!mongoose.Types.ObjectId.isValid(normalizedSubcategory)) {
+        return res.status(400).json({ message: "Invalid subcategory ID" });
+      }
+      subcategoryDoc = await Subcategory.findOne({ _id: normalizedSubcategory, parent: category });
+      if (!subcategoryDoc) {
+        return res
+          .status(400)
+          .json({ message: "Subcategory invalid or does not belong to category" });
+      }
+    }
+
+    // ===== barcode =====
+    const bc = normalizeBarcode(barcode);
+    if (bc === null) {
+      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
+    }
+    if (bc) {
+      const exists = await Product.exists({ barcode: bc });
+      if (exists) return res.status(409).json({ message: "Barcode already exists" });
+    }
+
+    // ===== images =====
+    let images = [];
+    if (req.files?.length) {
+      images = await Promise.all(
+        req.files.map(async (file) => {
+          const result = await uploadToCloudinary(file.buffer, file.originalname);
+          return { url: result.url, public_id: result.public_id };
+        })
+      );
+    }
+    if (!images.length && body.images) {
+      let bodyImages = body.images;
+      if (typeof bodyImages === "string") bodyImages = [bodyImages];
+      images = bodyImages.map((url) => ({ url, public_id: "default_local_image" }));
+    }
+
+    const name_i18n = await buildLocalizedField(String(name).trim());
+    const description_i18n = await buildLocalizedField(String(description).trim());
+
+    const product = new Product({
+      name: name_i18n,
+      description: description_i18n,
+      price: parsedPrice,
+      category,
+      subcategory: subcategoryDoc?._id,
+      stock: parsedStock,
+      images,
+      brand: brand ? String(brand).trim() : undefined,
+      discount: discount !== undefined ? Number(discount) : undefined,
+      isFeatured: isFeatured === "true" || isFeatured === true,
+      isActive: isActive === "false" || isActive === false ? false : true,
+      barcode: bc,
+    });
+
+    await product.save();
+
+    const want = pickLangFromReq(req);
+    const data = product.toObject();
+    data.name_i18n = data.name;
+    data.description_i18n = data.description;
+    data.name = pickLocalized(data.name, want);
+    data.description = pickLocalized(data.description, want);
+
+    res.status(201).json({ message: "Product created", data });
+  } catch (err) {
+    if (err && err.code === 11000 && err.keyPattern && err.keyPattern.barcode) {
+      return res.status(409).json({ message: "Barcode already exists" });
+    }
+    console.error("Error in createProduct:", err);
+    res.status(500).json({ message: "Failed to create product" });
+  }
+};
+
+/* =========================================================
+ * LIST
+ * =======================================================*/
+const getProducts = async (req, res) => {
+  try {
+    const {
+      search,
+      category,
+      subcategory,
+      page = 1,
+      limit = 10,
+      includeUncategorized,
+    } = req.query;
+
+    const query = {};
+
+    // Поиск по имени/описанию/штрихкоду
+    if (search) {
+      const s = String(search).trim();
+      const regex = new RegExp(s, "i");
+      const or = [
+        { "name.ru": regex },
+        { "name.en": regex },
+        { "name.fi": regex },
+        { "description.ru": regex },
+        { "description.en": regex },
+        { "description.fi": regex },
+      ];
+      if (BARCODE_RE.test(s)) {
+        or.push({ barcode: s });
+      }
+      query.$or = or;
+    }
+
+    if (category) query.category = category;
+    if (subcategory) query.subcategory = subcategory;
+
+    // По умолчанию скрываем товары, которые ещё нуждаются в ручной категоризации
+    if (!includeUncategorized) {
+      query.needsCategorization = { $ne: true };
+    }
+
+    const skip = (page - 1) * limit;
+    const totalProducts = await Product.countDocuments(query);
+
+    const items = await Product.find(query)
+      .populate("category")
+      .populate("subcategory")
+      .select("-__v")
+      .sort({ createdAt: -1 })
+      .skip(Number(skip))
+      .limit(Number(limit));
+
+    const want = pickLangFromReq(req);
+    const products = items.map((doc) => {
+      const o = doc.toObject();
+      o.name_i18n = o.name;
+      o.description_i18n = o.description;
+      o.name = pickLocalized(o.name, want);
+      o.description = pickLocalized(o.description, want);
+      return o;
+    });
+
+    res.status(200).json({
+      message: "Products fetched",
+      data: { products, totalPages: Math.ceil(totalProducts / limit), totalProducts },
+    });
+  } catch (error) {
+    console.error("Error in getProducts:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * GET BY ID
+ * =======================================================*/
+const getProductById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+
+    const product = await Product.findById(id)
+      .populate("category")
+      .populate("subcategory")
+      .select("-__v");
+
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    const want = pickLangFromReq(req);
+    const data = product.toObject();
+    data.name_i18n = data.name;
+    data.description_i18n = data.description;
+    data.name = pickLocalized(data.name, want);
+    data.description = pickLocalized(data.description, want);
+
+    res.status(200).json({ message: "Product fetched", data });
+  } catch (error) {
+    console.error("Error fetching product by ID:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * BY CATEGORY
+ * =======================================================*/
+const getProductsByCategory = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const want = pickLangFromReq(req);
+    const items = await Product.find({ category: categoryId });
+    const products = items.map((doc) => {
+      const o = doc.toObject();
+      o.name_i18n = o.name;
+      o.description_i18n = o.description;
+      o.name = pickLocalized(o.name, want);
+      o.description = pickLocalized(o.description, want);
+      return o;
+    });
+    res.json({ message: "Products by category", data: products });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+/* =========================================================
+ * BY CATEGORY + SUBCATEGORY
+ * =======================================================*/
+const getProductsByCategoryAndSubcategory = async (req, res) => {
+  try {
+    const { categoryId, subcategoryId } = req.params;
+    const want = pickLangFromReq(req);
+    const items = await Product.find({ category: categoryId, subcategory: subcategoryId });
+    const products = items.map((doc) => {
+      const o = doc.toObject();
+      o.name_i18n = o.name;
+      o.description_i18n = o.description;
+      o.name = pickLocalized(o.name, want);
+      o.description = pickLocalized(o.description, want);
+      return o;
+    });
+    res.json({ message: "Products by category+subcategory", data: products });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+/* =========================================================
+ * UPDATE
+ * =======================================================*/
+const updateProduct = async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const files = req.files || [];
+    const body = req.body || {};
+
+    const {
+      name,
+      description,
+      price,
+      stock,
+      category,
+      subcategory,
+      removeAllImages,
+      existingImages,
+      brand,
+      discount,
+      isFeatured,
+      isActive,
+      barcode,
+    } = body;
+
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+    if (name && String(name).trim().length < 3) {
+      return res.status(400).json({ message: "Name must be at least 3 characters" });
+    }
+    if (description && String(description).trim().length < 10) {
+      return res.status(400).json({ message: "Description must be at least 10 characters" });
+    }
+
+    if (price !== undefined) {
+      const parsedPrice = Number(price);
+      if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+        return res.status(400).json({ message: "Price must be a non-negative number" });
+      }
+      product.price = parsedPrice;
+    }
+
+    if (stock !== undefined) {
+      const parsedStock = Number.isInteger(Number(stock)) ? Number(stock) : NaN;
+      if (!Number.isFinite(parsedStock) || parsedStock < 0) {
+        return res.status(400).json({ message: "Stock must be a non-negative integer" });
+      }
+      product.stock = parsedStock;
+    }
+
+    if (category) {
+      if (!mongoose.Types.ObjectId.isValid(category)) {
+        return res.status(400).json({ message: "Invalid category ID" });
+      }
+      product.category = category;
+      // если руками поменяли категорию — логично сбросить "нужно категоризировать"
+      product.needsCategorization = false;
+    }
+
+    const normSub = (val) => {
+      if (val == null) return undefined;
+      if (typeof val !== "string") return val;
+      const t = val.trim().toLowerCase();
+      if (!t || t === "undefined" || t === "null") return undefined;
+      return val;
+    };
+    const normalizedSubcategory = normSub(subcategory);
+    if (subcategory !== undefined) {
+      if (normalizedSubcategory && !mongoose.Types.ObjectId.isValid(normalizedSubcategory)) {
+        return res.status(400).json({ message: "Invalid subcategory ID" });
+      }
+      product.subcategory = normalizedSubcategory || undefined;
+    }
+
+    if (typeof brand !== "undefined") product.brand = brand ? String(brand).trim() : undefined;
+    if (typeof discount !== "undefined") product.discount = Number(discount);
+    if (typeof isFeatured !== "undefined")
+      product.isFeatured = isFeatured === "true" || isFeatured === true;
+    if (typeof isActive !== "undefined")
+      product.isActive = !(isActive === "false" || isActive === false);
+
+    // i18n
+    if (name) product.name = await updateLocalizedField(product.name, String(name).trim());
+    if (description)
+      product.description = await updateLocalizedField(
+        product.description,
+        String(description).trim()
+      );
+
+    // barcode set/change/clear
+    if (barcode !== undefined) {
+      const bc = normalizeBarcode(barcode);
+      if (bc === null) {
+        return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
+      }
+      if (!bc) {
+        product.barcode = undefined;
+      } else {
+        const duplicate = await Product.findOne({ _id: { $ne: product._id }, barcode: bc }).lean();
+        if (duplicate) return res.status(409).json({ message: "Barcode already exists" });
+        product.barcode = bc;
+      }
+    }
+
+    // images
+    let existingImagesParsed = [];
+    if (typeof existingImages !== "undefined") {
+      if (Array.isArray(existingImages)) existingImagesParsed = existingImages;
+      else if (typeof existingImages === "string") {
+        const s = existingImages.trim();
+        if (s && s !== "undefined" && s !== "null") {
+          try {
+            const parsed = JSON.parse(s);
+            if (Array.isArray(parsed)) existingImagesParsed = parsed;
+            else if (parsed && parsed.url && parsed.public_id) existingImagesParsed = [parsed];
+          } catch {
+            if (/^https?:\/\//i.test(s)) {
+              existingImagesParsed = [{ url: s, public_id: "default_local_image" }];
+            }
+          }
+        }
+      } else if (existingImages && existingImages.url && existingImages.public_id) {
+        existingImagesParsed = [existingImages];
+      }
+    }
+
+    const shouldRemoveAll = removeAllImages === true || removeAllImages === "true";
+    if (shouldRemoveAll) product.images = [];
+    else if (existingImagesParsed.length) product.images = existingImagesParsed;
+
+    const uploadFromBuffer = (buffer) =>
+      new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "products", resource_type: "image" },
+          (error, result) => (error ? reject(error) : resolve(result))
+        );
+        stream.end(buffer);
+      });
+
+    let newImages = [];
+    if (files.length) {
+      const uploadResults = await Promise.all(files.map((f) => uploadFromBuffer(f.buffer)));
+      newImages = uploadResults.map((r) => ({ url: r.secure_url || r.url, public_id: r.public_id }));
+    }
+    if (newImages.length) product.images = (product.images || []).concat(newImages);
+
+    await product.save();
+
+    const want = pickLangFromReq(req);
+    const data = product.toObject();
+    data.name_i18n = data.name;
+    data.description_i18n = data.description;
+    data.name = pickLocalized(data.name, want);
+    data.description = pickLocalized(data.description, want);
+
+    return res.status(200).json({ message: "Product updated", data });
+  } catch (error) {
+    if (error && error.code === 11000 && error.keyPattern && error.keyPattern.barcode) {
+      return res.status(409).json({ message: "Barcode already exists" });
+    }
+    console.error("Error in updateProduct:", error, { headers: req.headers });
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/* =========================================================
+ * SEARCH
+ * =======================================================*/
+const searchProducts = async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.trim() === "") {
+      return res.status(400).json({ message: 'Query parameter "q" is required' });
+    }
+    const s = String(q).trim();
+    const regex = new RegExp(s, "i");
+    const or = [
+      { "name.ru": regex },
+      { "name.en": regex },
+      { "name.fi": regex },
+      { "description.ru": regex },
+      { "description.en": regex },
+      { "description.fi": regex },
+    ];
+    if (BARCODE_RE.test(s)) or.push({ barcode: s });
+
+    const items = await Product.find({ $or: or })
+      .limit(30)
+      .populate("category")
+      .populate("subcategory")
+      .select("-__v")
+      .sort({ createdAt: -1 });
+
+    const want = pickLangFromReq(req);
+    const products = items.map((doc) => {
+      const o = doc.toObject();
+      o.name_i18n = o.name;
+      o.description_i18n = o.description;
+      o.name = pickLocalized(o.name, want);
+      o.description = pickLocalized(o.description, want);
+      return o;
+    });
+
+    res.status(200).json({ message: "Search completed", data: products });
+  } catch (error) {
+    console.error("Search error:", error);
+    res.status(500).json({ message: "Server error during search" });
+  }
+};
+
+/* =========================================================
+ * DELETE PRODUCT
+ * =======================================================*/
+const deleteProduct = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+
+    const product = await Product.findById(id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    const publicIds = collectPublicIdsFromImages(product.images);
+    if (publicIds.length) {
+      try {
+        const result = await deleteCloudinaryResources(publicIds);
+        console.log("[deleteProduct] cloudinary delete_resources:", result);
+      } catch (e) {
+        console.warn("[deleteProduct] cloudinary delete_resources failed:", e?.message || e);
+      }
+    }
+
+    await Product.findByIdAndDelete(id);
+
+    return res.status(200).json({ message: "Product deleted", data: { _id: id } });
+  } catch (error) {
+    console.error("Error in deleteProduct:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * DELETE SINGLE IMAGE
+ * =======================================================*/
+const deleteProductImage = async (req, res) => {
+  try {
+    const productId = String(req.params.productId || req.params.id || "").trim();
+    const rawPublicId = decodeURIComponent(String(req.params.publicId || "").trim());
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    if (!rawPublicId) return res.status(400).json({ message: "publicId is required" });
+
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    try {
+      if (rawPublicId !== "default_local_image") {
+        const resDel = await cloudinary.uploader.destroy(rawPublicId);
+        console.log("[deleteProductImage] cloudinary.destroy:", rawPublicId, resDel);
+      }
+    } catch (e) {
+      console.warn("[deleteProductImage] cloudinary destroy failed:", rawPublicId, e?.message);
+    }
+
+    product.images = (product.images || []).filter((img) => {
+      if (!img) return false;
+      if (typeof img === "string") {
+        const fromUrl = extractPublicIdFromUrl(img);
+        return fromUrl !== rawPublicId;
+      }
+      return img.public_id !== rawPublicId;
+    });
+    await product.save();
+
+    return res
+      .status(200)
+      .json({ message: "Image deleted", data: { _id: productId, public_id: rawPublicId } });
+  } catch (error) {
+    console.error("Error in deleteProductImage:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * UPDATE SINGLE IMAGE
+ * =======================================================*/
+const updateProductImage = async (req, res) => {
+  try {
+    const productId = String(req.params.productId || req.params.id || "").trim();
+    const oldPid = decodeURIComponent(String(req.params.publicId || "").trim());
+    const file = req.file;
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    if (!file) {
+      return res.status(400).json({ message: "Image file is required" });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    const uploaded = await uploadToCloudinary(file.buffer, file.originalname);
+    const newUrl = uploaded.secure_url || uploaded.url;
+    const newPid = uploaded.public_id;
+
+    if (oldPid && oldPid !== "default_local_image") {
+      try {
+        const resDel = await cloudinary.uploader.destroy(oldPid);
+        console.log("[updateProductImage] cloudinary.destroy:", oldPid, resDel);
+      } catch (e) {
+        console.warn("[updateProductImage] cloudinary destroy failed:", oldPid, e?.message);
+      }
+    }
+
+    product.images = (product.images || []).map((img) => {
+      if (typeof img === "string") {
+        const fromUrl = extractPublicIdFromUrl(img);
+        return fromUrl === oldPid ? { url: newUrl, public_id: newPid } : img;
+      }
+      return img.public_id === oldPid ? { url: newUrl, public_id: newPid } : img;
+    });
+
+    await product.save();
+
+    return res.status(200).json({
+      message: "Image updated",
+      data: { _id: productId, public_id: newPid, url: newUrl },
+    });
+  } catch (error) {
+    console.error("Error in updateProductImage:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =========================================================
+ * IMPORT / ENSURE / SYNC
+ * =======================================================*/
+const importFromErplyById = async (req, res) => {
+  try {
+    const { erplyId } = req.params;
+    if (!erplyId) return res.status(400).json({ message: "erplyId is required" });
+
+    const remote = await fetchProductById(erplyId);
+    if (!remote) return res.status(404).json({ message: "Erply product not found" });
+
+    const doc = await upsertFromErply(remote);
+    return res.status(200).json({ message: "Imported from Erply", data: doc });
+  } catch (e) {
+    console.error("importFromErplyById", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const importFromErplyByBarcode = async (req, res) => {
+  try {
+    const { barcode } = req.params;
+    if (!barcode) return res.status(400).json({ message: "barcode is required" });
+    if (!BARCODE_RE.test(String(barcode))) {
+      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
+    }
+
+    const remote = await fetchProductByBarcode(barcode);
+    if (!remote) return res.status(404).json({ message: "Erply product not found" });
+
+    const doc = await upsertFromErply(remote);
+    return res.status(200).json({ message: "Imported from Erply", data: doc });
+  } catch (e) {
+    console.error("importFromErplyByBarcode", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+/**
+ * ENSURE BY BARCODE (упрощённый под твои требования)
+ * - если такой штрих-код уже есть → 409
+ * - если нет → создаём НОВЫЙ продукт по данным ERPLY
+ *   только с нужными полями и с одной тех.категорией "Imported"
+ */
+const ensureByBarcode = async (req, res) => {
+  try {
+    const lang = pickLangFromReq(req) || "en";
+    const rawBarcode = String(req.params.barcode || "").trim();
+
+    const normalized = normalizeBarcode(rawBarcode);
+    if (normalized === null || !normalized) {
+      const msg = {
+        ru: "Неверный штрих-код: ожидается 4–14 цифр",
+        en: "Invalid barcode: expected 4–14 digits",
+        fi: "Virheellinen viivakoodi: odotetaan 4–14 numeroa",
+      };
+      return res.status(400).json({ message: msg[lang] || msg.en });
+    }
+    const barcode = normalized;
+
+    // 1. Проверяем дубликат по штрих-коду
+    const existing = await Product.findOne({ barcode }).lean();
+    if (existing) {
+      const msgDup = {
+        ru: "Товар с таким штрих-кодом уже существует",
+        en: "A product with this barcode already exists",
+        fi: "Tuote tällä viivakoodilla on jo olemassa",
+      };
+      return res.status(409).json({ message: msgDup[lang] || msgDup.en });
+    }
+
+    // 2. Тянем товар из ERPLY
+    const remote = await fetchProductByBarcode(barcode);
+    if (!remote) {
+      const msgNotFound = {
+        ru: "Товар в ERPLY с таким штрих-кодом не найден",
+        en: "Erply product not found for this barcode",
+        fi: "Erply-tuotetta tällä viivakoodilla ei löytynyt",
+      };
+      return res.status(404).json({ message: msgNotFound[lang] || msgNotFound.en });
+    }
+
+    // 3. Находим/создаём одну тех.категорию "Imported"
+    let categoryDoc = await findOrCreateImportedCategory();
+    if (!categoryDoc) {
+      console.error("ensureByBarcode: imported category not found/created");
+      return res.status(500).json({ message: "Server error" });
+    }
+
+    // 4. Цена и остаток
+    const price =
+      Number(
+        remote.priceWithVat ||
+          remote.priceWithVAT ||
+          remote.price ||
+          remote.priceOriginal ||
+          remote.basePrice
+      ) || 0;
+
+    const stock =
+      Number(
+        remote.amountInStock ||
+          remote.totalInStock ||
+          remote.neto ||
+          remote.quantity
+      ) || 0;
+
+    const nameStr =
+      remote.name || remote.productName || remote.itemName || "Imported product";
+
+    const descStr =
+      remote.longdesc ||
+      remote.longDescription ||
+      remote.description ||
+      "";
+
+    const name_i18n = await buildLocalizedField(String(nameStr).trim());
+    const description_i18n = await buildLocalizedField(String(descStr).trim());
+
+    // 5. Картинка (если есть)
+    const images = [];
+    const imgUrl =
+      remote.pictureURL ||
+      remote.pictureUrl ||
+      remote.imageURL ||
+      remote.imageUrl ||
+      (remote.image && remote.image.url);
+    if (imgUrl) {
+      images.push({
+        url: imgUrl,
+        public_id: "default_local_image",
+        sourceUrl: imgUrl,
+      });
+    }
+
+    // 6. Создаём НОВЫЙ продукт
+    const newProduct = new Product({
+      name: name_i18n,
+      description: description_i18n,
+      price,
+      stock,
+      barcode,
+      images,
+      category: categoryDoc._id,
+      subcategory: undefined,
+      brand: remote.brandName || undefined,
+      discount: undefined,
+      isFeatured: false,
+      isActive: true,
+      erplyId: remote.productID ? String(remote.productID) : undefined,
+      erplySKU: remote.code || remote.code2 || undefined,
+      erpSource: "erply",
+      erplySyncedAt: new Date(),
+      needsCategorization: true,
+    });
+
+    await newProduct.save();
+
+    const data = newProduct.toObject();
+    data.name_i18n = data.name;
+    data.description_i18n = data.description;
+    data.name = pickLocalized(data.name, lang);
+    data.description = pickLocalized(data.description, lang);
+
+    const msgOk = {
+      ru: "Товар импортирован из ERPLY",
+      en: "Product imported from Erply",
+      fi: "Tuote tuotu Erplystä",
+    };
+
+    return res.status(201).json({ message: msgOk[lang] || msgOk.en, data });
+  } catch (e) {
+    console.error("ensureByBarcode error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+const syncPriceStock = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+    const product = await Product.findById(id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+    if (!product.erplyId) return res.status(400).json({ message: "Product has no erplyId" });
+
+    const result = await syncPriceStockByErplyId(product.erplyId);
+    return res.status(200).json({ message: "Synced price & stock", data: result });
+  } catch (e) {
+    console.error("syncPriceStock", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+module.exports = {
+  createProduct,
   getProducts,
   getProductById,
-  createProduct,
-  updateProduct,
-  deleteProduct,
   getProductsByCategory,
   getProductsByCategoryAndSubcategory,
+  updateProduct,
   searchProducts,
+  deleteProduct,
   deleteProductImage,
   updateProductImage,
-
-  // NEW:
   importFromErplyById,
   importFromErplyByBarcode,
   ensureByBarcode,
   syncPriceStock,
-} = require("../controllers/productController");
-
-const rolesMiddleware = require("../middlewares/rolesMiddleware");
-const authMiddleware = require("../middlewares/authMiddleware");
-const ROLES = require("../config/roles");
-
-const upload = require("../middlewares/multer");
-
-const router = express.Router();
-
-/** ===== Erply import/sync (добавить до параметрических) ===== */
-router.post(
-  "/import/erply/:erplyId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  importFromErplyById
-);
-
-router.post(
-  "/import-by-barcode/:barcode",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  importFromErplyByBarcode
-);
-
-// если товара нет — создаст из Erply, иначе вернёт локальный
-router.get("/ensure-by-barcode/:barcode", ensureByBarcode);
-
-// лёгкий синк цены и остатка
-router.put(
-  "/:id/sync-erply-light",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  syncPriceStock
-);
-
-/** ===== Read ===== */
-router.get("/id/:id", getProductById);
-router.get("/search", searchProducts);
-
-/** ===== Image operations (placed BEFORE parametric GETs) ===== */
-router.delete(
-  "/:productId/images/:publicId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  deleteProductImage
-);
-
-router.put(
-  "/:productId/images/:publicId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.single("image"),
-  updateProductImage
-);
-
-/** ===== Create/Update/Delete product ===== */
-router.post(
-  "/",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.array("images", 10),
-  createProduct
-);
-
-router.put(
-  "/:id",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.array("images", 10),
-  updateProduct
-);
-
-router.delete(
-  "/:id",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  deleteProduct
-);
-
-/** ===== Parametric category GETs (keep at the end) ===== */
-router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
-router.get("/:categoryId", getProductsByCategory);
-router.get("/", getProducts);
-
-module.exports = router;
+};

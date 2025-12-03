@@ -72,6 +72,16 @@ async function deleteCloudinaryResources(publicIds) {
   return await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
 }
 
+/** ===== Imported category helper ===== */
+// ВАЖНО: эта категория должна существовать в Mongo заранее,
+// с name на трёх языках и slug: "imported"
+const IMPORTED_CATEGORY_SLUG = "imported";
+
+async function getImportedCategory() {
+  const cat = await Category.findOne({ slug: IMPORTED_CATEGORY_SLUG });
+  return cat;
+}
+
 /* =========================================================
  * CREATE
  * =======================================================*/
@@ -87,7 +97,9 @@ const createProduct = async (req, res) => {
           : await fetchProductByBarcode(body.barcode);
 
         if (!remote) {
-          return res.status(404).json({ message: "Erply product not found for provided ID/barcode" });
+          return res
+            .status(404)
+            .json({ message: "Erply product not found for provided ID/barcode" });
         }
 
         let doc = await upsertFromErply(remote);
@@ -128,7 +140,9 @@ const createProduct = async (req, res) => {
     } = body;
 
     if (!name || String(name).trim().length < 3) {
-      return res.status(400).json({ message: "Name is required and must be at least 3 characters" });
+      return res
+        .status(400)
+        .json({ message: "Name is required and must be at least 3 characters" });
     }
     if (!description || String(description).trim().length < 10) {
       return res
@@ -441,7 +455,7 @@ const updateProduct = async (req, res) => {
         return res.status(400).json({ message: "Invalid category ID" });
       }
       product.category = category;
-      // если руками поменяли категорию — логично сбросить "нужно категоризировать"
+      // если руками поменяли категорию — сбрасываем "нужно категоризировать"
       product.needsCategorization = false;
     }
 
@@ -470,7 +484,10 @@ const updateProduct = async (req, res) => {
     // i18n
     if (name) product.name = await updateLocalizedField(product.name, String(name).trim());
     if (description)
-      product.description = await updateLocalizedField(product.description, String(description).trim());
+      product.description = await updateLocalizedField(
+        product.description,
+        String(description).trim()
+      );
 
     // barcode set/change/clear
     if (barcode !== undefined) {
@@ -760,9 +777,7 @@ const importFromErplyByBarcode = async (req, res) => {
 };
 
 /**
- * ENSURE BY BARCODE
- * - если такой штрих-код уже есть → 409 + локализованное сообщение
- * - если нет → создаём НОВЫЙ продукт на основе данных ERPLY
+ * ENSURE BY BARCODE (используем одну заранее созданную категорию "imported")
  */
 const ensureByBarcode = async (req, res) => {
   try {
@@ -802,41 +817,13 @@ const ensureByBarcode = async (req, res) => {
       return res.status(404).json({ message: msgNotFound[lang] || msgNotFound.en });
     }
 
-    // 3. Категория из ERPLY (group) или заглушка "Imported"
-    const groupId =
-      Number(remote.productGroupID || remote.groupID || remote.productGroupId) || null;
-    const groupName = String(
-      remote.productGroupName || remote.groupName || remote.productGroup || ""
-    ).trim();
-
-    let categoryDoc = null;
-
-    if (groupId) {
-      categoryDoc = await Category.findOne({ erplyGroupId: groupId });
-      if (!categoryDoc) {
-        categoryDoc = await Category.create({
-          name: groupName || {
-            en: "Imported",
-            ru: "Импортировано",
-            fi: "Tuotu",
-          },
-          erplyGroupId: groupId,
-          erplyGroupName: groupName || undefined,
-          createdFromErply: true,
-        });
-      }
-    } else {
-      categoryDoc = await Category.findOne({ slug: "imported" });
-      if (!categoryDoc) {
-        categoryDoc = await Category.create({
-          name: {
-            en: "Imported",
-            ru: "Импортировано",
-            fi: "Tuotu",
-          },
-          createdFromErply: true,
-        });
-      }
+    // 3. Берём заранее созданную категорию "imported"
+    const categoryDoc = await getImportedCategory();
+    if (!categoryDoc) {
+      console.error("ensureByBarcode: imported category not found");
+      return res
+        .status(500)
+        .json({ message: "Imported category is missing in DB. Please create it." });
     }
 
     // 4. Цена и остаток
@@ -869,13 +856,30 @@ const ensureByBarcode = async (req, res) => {
     const name_i18n = await buildLocalizedField(String(nameStr).trim());
     const description_i18n = await buildLocalizedField(String(descStr).trim());
 
-    // 5. Создаём НОВЫЙ продукт
+    // 5. Картинка (если есть)
+    const images = [];
+    const imgUrl =
+      remote.pictureURL ||
+      remote.pictureUrl ||
+      remote.imageURL ||
+      remote.imageUrl ||
+      (remote.image && remote.image.url);
+    if (imgUrl) {
+      images.push({
+        url: imgUrl,
+        public_id: "default_local_image",
+        sourceUrl: imgUrl,
+      });
+    }
+
+    // 6. Создаём НОВЫЙ продукт
     const newProduct = new Product({
       name: name_i18n,
       description: description_i18n,
       price,
       stock,
       barcode,
+      images,
       category: categoryDoc._id,
       subcategory: undefined,
       brand: remote.brandName || undefined,
@@ -884,10 +888,8 @@ const ensureByBarcode = async (req, res) => {
       isActive: true,
       erplyId: remote.productID ? String(remote.productID) : undefined,
       erplySKU: remote.code || remote.code2 || undefined,
-      erplyProductGroupId: groupId || undefined,
-      erplyProductGroupName: groupName || undefined,
-      erplySyncedAt: new Date(),
       erpSource: "erply",
+      erplySyncedAt: new Date(),
       needsCategorization: true,
     });
 
