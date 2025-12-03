@@ -1,105 +1,24 @@
+// routes/productRoutes.js (пример)
 const express = require("express");
-
-const {
-  getProducts,
-  getProductById,
-  createProduct,
-  updateProduct,
-  deleteProduct,
-  getProductsByCategory,
-  getProductsByCategoryAndSubcategory,
-  searchProducts,
-  deleteProductImage,
-  updateProductImage,
-
-  // NEW:
-  importFromErplyById,
-  importFromErplyByBarcode,
-  ensureByBarcode,
-  syncPriceStock,
-} = require("../controllers/productController");
-
-const rolesMiddleware = require("../middlewares/rolesMiddleware");
-const authMiddleware = require("../middlewares/authMiddleware");
-const ROLES = require("../config/roles");
-
-const upload = require("../middlewares/multer");
-
 const router = express.Router();
 
-/** ===== Erply import/sync (добавить до параметрических) ===== */
-router.post(
-  "/import/erply/:erplyId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  importFromErplyById
-);
+const productCtrl = require("../controllers/productController");
+const erplyCtrl = require("../controllers/productErplyController");
 
-router.post(
-  "/import-by-barcode/:barcode",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  importFromErplyByBarcode
-);
+// обычные продукты
+router.post("/", upload.array("images"), productCtrl.createProduct);
+router.get("/", productCtrl.getProducts);
+router.get("/search", productCtrl.searchProducts);
+router.get("/:id", productCtrl.getProductById);
+router.put("/:id", upload.array("images"), productCtrl.updateProduct);
+router.delete("/:id", productCtrl.deleteProduct);
+router.delete("/:productId/images/:publicId", productCtrl.deleteProductImage);
+router.put("/:productId/images/:publicId", upload.single("image"), productCtrl.updateProductImage);
 
-// если товара нет — создаст из Erply, иначе вернёт локальный
-router.get("/ensure-by-barcode/:barcode", ensureByBarcode);
-
-// лёгкий синк цены и остатка
-router.put(
-  "/:id/sync-erply-light",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  syncPriceStock
-);
-
-/** ===== Read ===== */
-router.get("/id/:id", getProductById);
-router.get("/search", searchProducts);
-
-/** ===== Image operations (placed BEFORE parametric GETs) ===== */
-router.delete(
-  "/:productId/images/:publicId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  deleteProductImage
-);
-
-router.put(
-  "/:productId/images/:publicId",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.single("image"),
-  updateProductImage
-);
-
-/** ===== Create/Update/Delete product ===== */
-router.post(
-  "/",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.array("images", 10),
-  createProduct
-);
-
-router.put(
-  "/:id",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  upload.array("images", 10),
-  updateProduct
-);
-
-router.delete(
-  "/:id",
-  authMiddleware,
-  rolesMiddleware(ROLES.ADMIN),
-  deleteProduct
-);
-
-/** ===== Parametric category GETs (keep at the end) ===== */
-router.get("/:categoryId/:subcategoryId", getProductsByCategoryAndSubcategory);
-router.get("/:categoryId", getProductsByCategory);
-router.get("/", getProducts);
+// erply-операции
+router.post("/erply/import/id/:erplyId", erplyCtrl.importFromErplyById);
+router.post("/erply/import/barcode/:barcode", erplyCtrl.importFromErplyByBarcode);
+router.post("/erply/ensure/:barcode", erplyCtrl.ensureByBarcode);
+router.post("/:id/erply-sync-price-stock", erplyCtrl.syncPriceStock);
 
 module.exports = router;

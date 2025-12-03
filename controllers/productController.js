@@ -12,9 +12,9 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
-// Erply helpers
+// Erply helpers (нужны для createProduct, когда приходит erplyId или barcode)
 const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
-const { upsertFromErply, syncPriceStockByErplyId } = require("../services/erplySyncService");
+const { upsertFromErply } = require("../services/erplySyncService");
 
 // === barcode: 4–14 digits ===
 const BARCODE_RE = /^\d{4,14}$/;
@@ -31,6 +31,7 @@ function normalizeBarcode(raw) {
 function isCloudinaryUrl(url) {
   return typeof url === "string" && /res\.cloudinary\.com\/.+\/image\/upload\//.test(url);
 }
+
 function extractPublicIdFromUrl(url) {
   if (!isCloudinaryUrl(url)) return null;
   try {
@@ -49,6 +50,7 @@ function extractPublicIdFromUrl(url) {
     return null;
   }
 }
+
 function collectPublicIdsFromImages(images) {
   const ids = [];
   for (const img of Array.isArray(images) ? images : []) {
@@ -67,19 +69,10 @@ function collectPublicIdsFromImages(images) {
   }
   return ids.filter((pid) => pid && pid !== "default_local_image");
 }
+
 async function deleteCloudinaryResources(publicIds) {
   if (!publicIds.length) return { deleted: {} };
   return await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
-}
-
-/** ===== Imported category helper ===== */
-// ВАЖНО: эта категория должна существовать в Mongo заранее,
-// с name на трёх языках и slug: "imported"
-const IMPORTED_CATEGORY_SLUG = "imported";
-
-async function getImportedCategory() {
-  const cat = await Category.findOne({ slug: IMPORTED_CATEGORY_SLUG });
-  return cat;
 }
 
 /* =========================================================
@@ -103,12 +96,15 @@ const createProduct = async (req, res) => {
         }
 
         let doc = await upsertFromErply(remote);
+
         if (typeof body.brand !== "undefined") doc.brand = String(body.brand).trim();
         if (typeof body.discount !== "undefined") doc.discount = Number(body.discount);
-        if (typeof body.isFeatured !== "undefined")
+        if (typeof body.isFeatured !== "undefined") {
           doc.isFeatured = body.isFeatured === "true" || body.isFeatured === true;
-        if (typeof body.isActive !== "undefined")
+        }
+        if (typeof body.isActive !== "undefined") {
           doc.isActive = !(body.isActive === "false" || body.isActive === false);
+        }
 
         await doc.save();
 
@@ -175,13 +171,17 @@ const createProduct = async (req, res) => {
       if (!t || t === "undefined" || t === "null") return undefined;
       return val;
     };
+
     let subcategoryDoc = null;
     const normalizedSubcategory = normSub(subcategory);
     if (normalizedSubcategory) {
       if (!mongoose.Types.ObjectId.isValid(normalizedSubcategory)) {
         return res.status(400).json({ message: "Invalid subcategory ID" });
       }
-      subcategoryDoc = await Subcategory.findOne({ _id: normalizedSubcategory, parent: category });
+      subcategoryDoc = await Subcategory.findOne({
+        _id: normalizedSubcategory,
+        parent: category,
+      });
       if (!subcategoryDoc) {
         return res
           .status(400)
@@ -427,6 +427,7 @@ const updateProduct = async (req, res) => {
 
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
+
     if (name && String(name).trim().length < 3) {
       return res.status(400).json({ message: "Name must be at least 3 characters" });
     }
@@ -466,6 +467,7 @@ const updateProduct = async (req, res) => {
       if (!t || t === "undefined" || t === "null") return undefined;
       return val;
     };
+
     const normalizedSubcategory = normSub(subcategory);
     if (subcategory !== undefined) {
       if (normalizedSubcategory && !mongoose.Types.ObjectId.isValid(normalizedSubcategory)) {
@@ -474,20 +476,29 @@ const updateProduct = async (req, res) => {
       product.subcategory = normalizedSubcategory || undefined;
     }
 
-    if (typeof brand !== "undefined") product.brand = brand ? String(brand).trim() : undefined;
-    if (typeof discount !== "undefined") product.discount = Number(discount);
-    if (typeof isFeatured !== "undefined")
+    if (typeof brand !== "undefined") {
+      product.brand = brand ? String(brand).trim() : undefined;
+    }
+    if (typeof discount !== "undefined") {
+      product.discount = Number(discount);
+    }
+    if (typeof isFeatured !== "undefined") {
       product.isFeatured = isFeatured === "true" || isFeatured === true;
-    if (typeof isActive !== "undefined")
+    }
+    if (typeof isActive !== "undefined") {
       product.isActive = !(isActive === "false" || isActive === false);
+    }
 
     // i18n
-    if (name) product.name = await updateLocalizedField(product.name, String(name).trim());
-    if (description)
+    if (name) {
+      product.name = await updateLocalizedField(product.name, String(name).trim());
+    }
+    if (description) {
       product.description = await updateLocalizedField(
         product.description,
         String(description).trim()
       );
+    }
 
     // barcode set/change/clear
     if (barcode !== undefined) {
@@ -498,8 +509,13 @@ const updateProduct = async (req, res) => {
       if (!bc) {
         product.barcode = undefined;
       } else {
-        const duplicate = await Product.findOne({ _id: { $ne: product._id }, barcode: bc }).lean();
-        if (duplicate) return res.status(409).json({ message: "Barcode already exists" });
+        const duplicate = await Product.findOne({
+          _id: { $ne: product._id },
+          barcode: bc,
+        }).lean();
+        if (duplicate) {
+          return res.status(409).json({ message: "Barcode already exists" });
+        }
         product.barcode = bc;
       }
     }
@@ -507,8 +523,9 @@ const updateProduct = async (req, res) => {
     // images
     let existingImagesParsed = [];
     if (typeof existingImages !== "undefined") {
-      if (Array.isArray(existingImages)) existingImagesParsed = existingImages;
-      else if (typeof existingImages === "string") {
+      if (Array.isArray(existingImages)) {
+        existingImagesParsed = existingImages;
+      } else if (typeof existingImages === "string") {
         const s = existingImages.trim();
         if (s && s !== "undefined" && s !== "null") {
           try {
@@ -527,8 +544,11 @@ const updateProduct = async (req, res) => {
     }
 
     const shouldRemoveAll = removeAllImages === true || removeAllImages === "true";
-    if (shouldRemoveAll) product.images = [];
-    else if (existingImagesParsed.length) product.images = existingImagesParsed;
+    if (shouldRemoveAll) {
+      product.images = [];
+    } else if (existingImagesParsed.length) {
+      product.images = existingImagesParsed;
+    }
 
     const uploadFromBuffer = (buffer) =>
       new Promise((resolve, reject) => {
@@ -542,9 +562,14 @@ const updateProduct = async (req, res) => {
     let newImages = [];
     if (files.length) {
       const uploadResults = await Promise.all(files.map((f) => uploadFromBuffer(f.buffer)));
-      newImages = uploadResults.map((r) => ({ url: r.secure_url || r.url, public_id: r.public_id }));
+      newImages = uploadResults.map((r) => ({
+        url: r.secure_url || r.url,
+        public_id: r.public_id,
+      }));
     }
-    if (newImages.length) product.images = (product.images || []).concat(newImages);
+    if (newImages.length) {
+      product.images = (product.images || []).concat(newImages);
+    }
 
     await product.save();
 
@@ -574,6 +599,7 @@ const searchProducts = async (req, res) => {
     if (!q || q.trim() === "") {
       return res.status(400).json({ message: 'Query parameter "q" is required' });
     }
+
     const s = String(q).trim();
     const regex = new RegExp(s, "i");
     const or = [
@@ -653,7 +679,9 @@ const deleteProductImage = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(productId)) {
       return res.status(400).json({ message: "Invalid product ID" });
     }
-    if (!rawPublicId) return res.status(400).json({ message: "publicId is required" });
+    if (!rawPublicId) {
+      return res.status(400).json({ message: "publicId is required" });
+    }
 
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
@@ -675,11 +703,13 @@ const deleteProductImage = async (req, res) => {
       }
       return img.public_id !== rawPublicId;
     });
+
     await product.save();
 
-    return res
-      .status(200)
-      .json({ message: "Image deleted", data: { _id: productId, public_id: rawPublicId } });
+    return res.status(200).json({
+      message: "Image deleted",
+      data: { _id: productId, public_id: rawPublicId },
+    });
   } catch (error) {
     console.error("Error in deleteProductImage:", error);
     return res.status(500).json({ message: "Server error" });
@@ -738,228 +768,6 @@ const updateProductImage = async (req, res) => {
   }
 };
 
-/* =========================================================
- * IMPORT / ENSURE / SYNC
- * =======================================================*/
-const importFromErplyById = async (req, res) => {
-  try {
-    const { erplyId } = req.params;
-    if (!erplyId) return res.status(400).json({ message: "erplyId is required" });
-
-    const remote = await fetchProductById(erplyId);
-    if (!remote) return res.status(404).json({ message: "Erply product not found" });
-
-    const doc = await upsertFromErply(remote);
-    return res.status(200).json({ message: "Imported from Erply", data: doc });
-  } catch (e) {
-    console.error("importFromErplyById", e);
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-const importFromErplyByBarcode = async (req, res) => {
-  try {
-    const { barcode } = req.params;
-    if (!barcode) return res.status(400).json({ message: "barcode is required" });
-    if (!BARCODE_RE.test(String(barcode))) {
-      return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
-    }
-
-    const remote = await fetchProductByBarcode(barcode);
-    if (!remote) return res.status(404).json({ message: "Erply product not found" });
-
-    const doc = await upsertFromErply(remote);
-    return res.status(200).json({ message: "Imported from Erply", data: doc });
-  } catch (e) {
-    console.error("importFromErplyByBarcode", e);
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-const ensureByBarcode = async (req, res) => {
-  try {
-    const lang = pickLangFromReq(req) || "en";
-    const rawBarcode = String(req.params.barcode || "").trim();
-
-    const normalized = normalizeBarcode(rawBarcode);
-    if (normalized === null || !normalized) {
-      const msg = {
-        ru: "Неверный штрих-код: ожидается 4–14 цифр",
-        en: "Invalid barcode: expected 4–14 digits",
-        fi: "Virheellinen viivakoodi: odotetaan 4–14 numeroa",
-      };
-      return res.status(400).json({ message: msg[lang] || msg.en });
-    }
-    const barcode = normalized;
-
-    const existing = await Product.findOne({ barcode }).lean();
-    if (existing) {
-      const msgDup = {
-        ru: "Товар с таким штрих-кодом уже существует",
-        en: "A product with this barcode already exists",
-        fi: "Tuote tällä viivakoodilla on jo olemassa",
-      };
-      return res.status(409).json({ message: msgDup[lang] || msgDup.en });
-    }
-
-    let remote;
-    try {
-      remote = await fetchProductByBarcode(barcode);
-    } catch (e) {
-      console.error("ensureByBarcode: fetchProductByBarcode error:", e?.message || e);
-      const msgErplyDown = {
-        ru: "Ошибка обращения к ERPLY. Попробуйте позже.",
-        en: "Failed to contact Erply. Please try again later.",
-        fi: "Virhe yhteydessä Erplyyn. Yritä myöhemmin uudelleen.",
-      };
-      return res.status(502).json({ message: msgErplyDown[lang] || msgErplyDown.en });
-    }
-
-    if (!remote) {
-      const msgNotFound = {
-        ru: "Товар в ERPLY с таким штрих-кодом не найден",
-        en: "Erply product not found for this barcode",
-        fi: "Erply-tuotetta tällä viivakoodilla ei löytynyt",
-      };
-      return res.status(404).json({ message: msgNotFound[lang] || msgNotFound.en });
-    }
-
-    let categoryDoc = await Category.findOne({ slug: "imported" });
-    if (!categoryDoc) {
-      try {
-        categoryDoc = await Category.create({
-          name: {
-            en: "Imported",
-            ru: "Импортировано",
-            fi: "Tuotu",
-          },
-          slug: "imported",
-          createdFromErply: true,
-        });
-      } catch (e) {
-        if (e?.code === 11000) {
-          categoryDoc = await Category.findOne({ slug: "imported" });
-        } else {
-          console.error("ensureByBarcode: create imported category error:", e);
-          return res.status(500).json({ message: "Failed to prepare imported category" });
-        }
-      }
-    }
-
-    if (!categoryDoc) {
-      console.error("ensureByBarcode: imported category still not found");
-      return res.status(500).json({ message: "Imported category is not configured" });
-    }
-
-    const price =
-      Number(
-        remote.priceWithVat ||
-          remote.priceWithVAT ||
-          remote.price ||
-          remote.priceOriginal ||
-          remote.basePrice
-      ) || 0;
-
-    const stock =
-      Number(
-        remote.amountInStock ||
-          remote.totalInStock ||
-          remote.neto ||
-          remote.quantity
-      ) || 0;
-
-    const nameStr =
-      remote.name || remote.productName || remote.itemName || "Imported product";
-
-    const descStr =
-      remote.longdesc ||
-      remote.longDescription ||
-      remote.description ||
-      "";
-
-    const name_i18n = await buildLocalizedField(String(nameStr).trim());
-    const description_i18n = await buildLocalizedField(String(descStr).trim());
-
-    let newProduct;
-    try {
-      newProduct = new Product({
-        name: name_i18n,
-        description: description_i18n,
-        price,
-        stock,
-        barcode,
-        category: categoryDoc._id,
-        subcategory: undefined,
-        brand: remote.brandName || undefined,
-        discount: undefined,
-        isFeatured: false,
-        isActive: true,
-        erplyId: remote.productID ? String(remote.productID) : undefined,
-        erplySKU: remote.code || remote.code2 || undefined,
-        erplyProductGroupId:
-          Number(remote.productGroupID || remote.groupID || remote.productGroupId) || undefined,
-        erplyProductGroupName:
-          String(
-            remote.productGroupName || remote.groupName || remote.productGroup || ""
-          ).trim() || undefined,
-        erplySyncedAt: new Date(),
-        erpSource: "erply",
-        needsCategorization: true,
-      });
-
-      await newProduct.save();
-    } catch (e) {
-      if (e && e.code === 11000 && e.keyPattern && e.keyPattern.barcode) {
-        const msgDup = {
-          ru: "Товар с таким штрих-кодом уже существует",
-          en: "A product with this barcode already exists",
-          fi: "Tuote tällä viivakoodilla on jo olemassa",
-        };
-        return res.status(409).json({ message: msgDup[lang] || msgDup.en });
-      }
-
-      console.error("ensureByBarcode: save product error:", e);
-      return res.status(500).json({ message: "Failed to create product from Erply" });
-    }
-
-    const data = newProduct.toObject();
-    data.name_i18n = data.name;
-    data.description_i18n = data.description;
-    data.name = pickLocalized(data.name, lang);
-    data.description = pickLocalized(data.description, lang);
-
-    const msgOk = {
-      ru: "Товар импортирован из ERPLY",
-      en: "Product imported from Erply",
-      fi: "Tuote tuotu Erplystä",
-    };
-
-    return res.status(201).json({ message: msgOk[lang] || msgOk.en, data });
-  } catch (e) {
-    console.error("ensureByBarcode error (outer catch):", e);
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-
-const syncPriceStock = async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid product ID" });
-    }
-    const product = await Product.findById(id);
-    if (!product) return res.status(404).json({ message: "Product not found" });
-    if (!product.erplyId) return res.status(400).json({ message: "Product has no erplyId" });
-
-    const result = await syncPriceStockByErplyId(product.erplyId);
-    return res.status(200).json({ message: "Synced price & stock", data: result });
-  } catch (e) {
-    console.error("syncPriceStock", e);
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
 module.exports = {
   createProduct,
   getProducts,
@@ -971,8 +779,4 @@ module.exports = {
   deleteProduct,
   deleteProductImage,
   updateProductImage,
-  importFromErplyById,
-  importFromErplyByBarcode,
-  ensureByBarcode,
-  syncPriceStock,
 };

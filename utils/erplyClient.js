@@ -1,3 +1,4 @@
+// utils/erplyClient.js
 const axios = require("axios");
 
 const ERPLY_BASE = process.env.ERPLY_BASE;
@@ -14,6 +15,7 @@ if (!ERPLY_BASE || !ERPLY_CLIENT_CODE || !ERPLY_USERNAME || !ERPLY_PASSWORD) {
 let cachedKey = null;
 let cachedAt = 0;
 
+// те же 4–14 цифр, что и в сервисе
 const DIGIT_BARCODE_RE = /^\d{4,14}$/;
 
 function extractBarcodeFromErplyRecord(rec) {
@@ -95,6 +97,7 @@ async function fetchProductById(erplyId) {
   let recs = await call("getProducts", { productID: id, active: 1 });
 
   if (!recs || !recs.length) {
+    // fallback: ищем по code
     recs = await call("getProducts", { code: id, active: 1 });
   }
 
@@ -106,21 +109,20 @@ async function fetchProductById(erplyId) {
 }
 
 async function fetchProductByBarcode(barcode) {
-  let recs = await call("getProducts", { ean: barcode, active: 1 }).catch(
-    () => []
-  );
+  const bc = String(barcode || "").replace(/\D+/g, "");
+  if (!DIGIT_BARCODE_RE.test(bc)) return null;
+
+  let recs = await call("getProducts", { ean: bc, active: 1 }).catch(() => []);
   if (!recs?.length) {
-    recs = await call("getProducts", { code2: barcode, active: 1 }).catch(
-      () => []
-    );
+    recs = await call("getProducts", { code2: bc, active: 1 }).catch(() => []);
   }
   if (!recs?.length) {
-    recs = await call("getProducts", { code: barcode, active: 1 }).catch(
-      () => []
-    );
+    recs = await call("getProducts", { code: bc, active: 1 }).catch(() => []);
   }
+
   const rec = recs?.[0] || null;
   if (!rec) return null;
+
   rec.__extractedBarcode = extractBarcodeFromErplyRecord(rec);
   return rec;
 }
