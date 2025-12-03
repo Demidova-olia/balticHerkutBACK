@@ -349,4 +349,4 @@ async function syncPriceStockByErplyId(erplyId) {
   return { _id: doc._id, changed, price: doc.price, stock: doc.stock };
 }
 
-module.exports = { upsertFromErply, syncPriceStockByErplyId };
+module.exports = { upsertFromErply, syncPriceStockByErplyId, mapErplyMinimal, };

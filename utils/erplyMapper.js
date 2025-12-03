@@ -1,5 +1,7 @@
 // utils/erplyMapper.js
 const crypto = require("crypto");
+const { mapErplyMinimal } = require("../services/erplySyncService");
+
 function makeLocalized(text) {
   const s = String(text || "").trim();
   return {
@@ -10,30 +12,38 @@ function makeLocalized(text) {
     _mt: {},
   };
 }
-function toSafeNumber(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-function normalizeBarcode(v) {
-  if (v == null) return undefined;
-  const digits = String(v).replace(/\D+/g, "");
-  if (!digits) return undefined;
-  return /^\d{4,14}$/.test(digits) ? digits : undefined;
-}
 
 function collectImages(erply) {
   const out = [];
 
   if (Array.isArray(erply?.pictures)) {
     for (const p of erply.pictures) {
-      const url = p?.fullURL || p?.thumbURL || p?.thumbnailURL || p?.url;
-      if (url) out.push({ url, public_id: "default_local_image", sourceUrl: url });
+      const url =
+        p?.fullURL || p?.thumbURL || p?.thumbnailURL || p?.url;
+      if (url) {
+        out.push({
+          url,
+          public_id: "default_local_image",
+          sourceUrl: url,
+        });
+      }
     }
   }
 
-  if (erply?.imageURL) out.push({ url: erply.imageURL, public_id: "default_local_image", sourceUrl: erply.imageURL });
-  if (erply?.pictureURL) out.push({ url: erply.pictureURL, public_id: "default_local_image", sourceUrl: erply.pictureURL });
+  if (erply?.imageURL) {
+    out.push({
+      url: erply.imageURL,
+      public_id: "default_local_image",
+      sourceUrl: erply.imageURL,
+    });
+  }
+  if (erply?.pictureURL) {
+    out.push({
+      url: erply.pictureURL,
+      public_id: "default_local_image",
+      sourceUrl: erply.pictureURL,
+    });
+  }
 
   const seen = new Set();
   return out.filter((img) => {
@@ -57,51 +67,24 @@ function buildHash(mapped) {
 }
 
 function mapErplyToProductFields(erply) {
-  const nameRaw =
-    erply?.name ||
-    erply?.productName ||
-    ""; 
-  const descRaw =
-    erply?.longdesc ||
-    erply?.longDescription ||
-    erply?.description ||
-    "";
-
-  const price = toSafeNumber(
-    erply?.priceWithVAT != null ? erply.priceWithVAT : erply?.price,
-    0
-  );
-  const stock = toSafeNumber(
-    erply?.amountInStock != null ? erply.amountInStock : erply?.freeAmount,
-    0
-  );
-
-  const barcode =
-    normalizeBarcode(erply?.ean) ||
-    normalizeBarcode(erply?.eanCode) ||
-    normalizeBarcode(erply?.code) ||
-    undefined;
+  // Берём все основные поля из того же места, что использует upsertFromErply
+  const minimal = mapErplyMinimal(erply);
 
   const images = collectImages(erply);
 
-  const isActive = erply?.active === 0 ? false : true;
-
-  const skuPrimary = erply?.code ? String(erply.code).trim() : undefined;
-  const sku2 = erply?.code2 ? String(erply.code2).trim() : undefined;
-
   const mapped = {
-    name: makeLocalized(nameRaw || "No name"),
-    description: makeLocalized(descRaw || ""),
-    price,
-    stock,
+    name: makeLocalized(minimal.nameStr || "No name"),
+    description: makeLocalized(minimal.descStr || ""),
+    price: minimal.price,
+    stock: minimal.stock,
 
-    brand: erply?.brandName || erply?.brand || undefined,
-    barcode,
+    brand: minimal.brand || undefined,
+    barcode: minimal.barcode,
     images,
-    isActive,
+    isActive: true,
 
-    erplyId: erply?.productID ? String(erply.productID) : undefined,
-    erplySKU: skuPrimary || sku2 || undefined,
+    erplyId: minimal.erplyId,
+    erplySKU: minimal.erplySKU,
     erpSource: "erply",
   };
 
@@ -111,4 +94,3 @@ function mapErplyToProductFields(erply) {
 }
 
 module.exports = { mapErplyToProductFields };
-
