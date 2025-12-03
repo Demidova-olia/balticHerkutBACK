@@ -1,69 +1,89 @@
-// routes/productRoutes.js
 const express = require("express");
-const multer = require("multer");
-
-const router = express.Router();
-const upload = multer(); // in-memory, как и раньше
 
 const productCtrl = require("../controllers/productController");
 const erplyCtrl = require("../controllers/productErplyController");
 
-/* =========================================================
- * Обычные продукты (CRUD + поиск + категории)
- * =======================================================*/
+const rolesMiddleware = require("../middlewares/rolesMiddleware");
+const authMiddleware = require("../middlewares/authMiddleware");
+const ROLES = require("../config/roles");
 
-// создать продукт (с картинками)
-router.post("/", upload.array("images"), productCtrl.createProduct);
+const upload = require("../middlewares/multer");
 
-// список с фильтрами / пагинацией
-router.get("/", productCtrl.getProducts);
+const router = express.Router();
 
-// поиск по строке ?q=...
+/** ===== Erply import/sync (добавить до параметрических) ===== */
+router.post(
+  "/import/erply/:erplyId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  erplyCtrl.importFromErplyById
+);
+
+router.post(
+  "/import-by-barcode/:barcode",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  erplyCtrl.importFromErplyByBarcode
+);
+
+// если товара нет — создаст из Erply, иначе вернёт локальный
+router.get("/ensure-by-barcode/:barcode", erplyCtrl.ensureByBarcode);
+
+// лёгкий синк цены и остатка
+router.put(
+  "/:id/sync-erply-light",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  erplyCtrl.syncPriceStock
+);
+
+/** ===== Read ===== */
+router.get("/id/:id", productCtrl.getProductById);
 router.get("/search", productCtrl.searchProducts);
 
-// получить по ID (ФРОНТ ждёт /products/id/:id)
-router.get("/id/:id", productCtrl.getProductById);
+/** ===== Image operations (placed BEFORE parametric GETs) ===== */
+router.delete(
+  "/:productId/images/:publicId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  productCtrl.deleteProductImage
+);
 
-// по категории + подкатегории
-router.get("/:categoryId/:subcategoryId", productCtrl.getProductsByCategoryAndSubcategory);
-
-// по категории
-router.get("/:categoryId", productCtrl.getProductsByCategory);
-
-// обновить продукт (с картинками)
-router.put("/:id", upload.array("images"), productCtrl.updateProduct);
-
-// удалить продукт
-router.delete("/:id", productCtrl.deleteProduct);
-
-// удалить одну картинку
-router.delete("/:productId/images/:publicId", productCtrl.deleteProductImage);
-
-// обновить одну картинку
 router.put(
   "/:productId/images/:publicId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
   upload.single("image"),
   productCtrl.updateProductImage
 );
 
-/* =========================================================
- * ERPLY-операции (под фронтовые пути!)
- * =======================================================*/
+/** ===== Create/Update/Delete product ===== */
+router.post(
+  "/",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  upload.array("images", 10),
+  productCtrl.createProduct
+);
 
-// ensureByBarcode(barcode) – SAFE GET
-// фронт: GET /api/products/ensure-by-barcode/:barcode
-router.get("/ensure-by-barcode/:barcode", erplyCtrl.ensureByBarcode);
+router.put(
+  "/:id",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  upload.array("images", 10),
+  productCtrl.updateProduct
+);
 
-// importFromErplyById(erplyId)
-// фронт: POST /api/products/import/erply/:erplyId
-router.post("/import/erply/:erplyId", erplyCtrl.importFromErplyById);
+router.delete(
+  "/:id",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  productCtrl.deleteProduct
+);
 
-// importFromErplyByBarcode(barcode)
-// фронт: POST /api/products/import-by-barcode/:barcode
-router.post("/import-by-barcode/:barcode", erplyCtrl.importFromErplyByBarcode);
-
-// syncPriceStock(productId)
-// фронт: PUT /api/products/:id/sync-erply-light
-router.put("/:id/sync-erply-light", erplyCtrl.syncPriceStock);
+/** ===== Parametric category GETs (keep at the end) ===== */
+router.get("/:categoryId/:subcategoryId", productCtrl.getProductsByCategoryAndSubcategory);
+router.get("/:categoryId", productCtrl.getProductsByCategory);
+router.get("/", productCtrl.getProducts);
 
 module.exports = router;
