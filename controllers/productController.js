@@ -12,10 +12,6 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
-// Erply helpers (нужны для createProduct, когда приходит erplyId или barcode)
-const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
-const { upsertFromErply } = require("../services/erplySyncService");
-
 // === barcode: 4–14 digits ===
 const BARCODE_RE = /^\d{4,14}$/;
 
@@ -81,45 +77,7 @@ async function deleteCloudinaryResources(publicIds) {
 const createProduct = async (req, res) => {
   try {
     const body = req.body || {};
-
-    // Если пришёл erplyId или barcode — пробуем сразу импортировать и создать
-    if (body.erplyId || body.barcode) {
-      try {
-        const remote = body.erplyId
-          ? await fetchProductById(body.erplyId)
-          : await fetchProductByBarcode(body.barcode);
-
-        if (!remote) {
-          return res
-            .status(404)
-            .json({ message: "Erply product not found for provided ID/barcode" });
-        }
-
-        let doc = await upsertFromErply(remote);
-
-        if (typeof body.brand !== "undefined") doc.brand = String(body.brand).trim();
-        if (typeof body.discount !== "undefined") doc.discount = Number(body.discount);
-        if (typeof body.isFeatured !== "undefined") {
-          doc.isFeatured = body.isFeatured === "true" || body.isFeatured === true;
-        }
-        if (typeof body.isActive !== "undefined") {
-          doc.isActive = !(body.isActive === "false" || body.isActive === false);
-        }
-
-        await doc.save();
-
-        const want = pickLangFromReq(req);
-        const data = doc.toObject();
-        data.name_i18n = data.name;
-        data.description_i18n = data.description;
-        data.name = pickLocalized(data.name, want);
-        data.description = pickLocalized(data.description, want);
-
-        return res.status(201).json({ message: "Product created from Erply", data });
-      } catch (e) {
-        console.warn("createProduct: erply import failed, fallback to manual create", e?.message);
-      }
-    }
+    const lang = pickLangFromReq(req) || "en";
 
     const {
       name,
@@ -215,8 +173,9 @@ const createProduct = async (req, res) => {
       images = bodyImages.map((url) => ({ url, public_id: "default_local_image" }));
     }
 
-    const name_i18n = await buildLocalizedField(String(name).trim());
-    const description_i18n = await buildLocalizedField(String(description).trim());
+    // Локализованные поля: язык определяется по текущему UI (pickLangFromReq)
+    const name_i18n = await buildLocalizedField(String(name).trim(), lang);
+    const description_i18n = await buildLocalizedField(String(description).trim(), lang);
 
     const product = new Product({
       name: name_i18n,
@@ -231,6 +190,7 @@ const createProduct = async (req, res) => {
       isFeatured: isFeatured === "true" || isFeatured === true,
       isActive: isActive === "false" || isActive === false ? false : true,
       barcode: bc,
+      // erpSource по умолчанию "manual" – это и нужно
     });
 
     await product.save();
@@ -268,7 +228,6 @@ const getProducts = async (req, res) => {
 
     const query = {};
 
-    // Поиск по имени/описанию/штрихкоду
     if (search) {
       const s = String(search).trim();
       const regex = new RegExp(s, "i");
@@ -289,7 +248,6 @@ const getProducts = async (req, res) => {
     if (category) query.category = category;
     if (subcategory) query.subcategory = subcategory;
 
-    // По умолчанию скрываем товары, которые ещё нуждаются в ручной категоризации
     if (!includeUncategorized) {
       query.needsCategorization = { $ne: true };
     }
@@ -408,6 +366,7 @@ const updateProduct = async (req, res) => {
     const productId = req.params.id;
     const files = req.files || [];
     const body = req.body || {};
+    const lang = pickLangFromReq(req) || "en";
 
     const {
       name,
@@ -456,7 +415,6 @@ const updateProduct = async (req, res) => {
         return res.status(400).json({ message: "Invalid category ID" });
       }
       product.category = category;
-      // если руками поменяли категорию — сбрасываем "нужно категоризировать"
       product.needsCategorization = false;
     }
 
@@ -489,14 +447,19 @@ const updateProduct = async (req, res) => {
       product.isActive = !(isActive === "false" || isActive === false);
     }
 
-    // i18n
+    // i18n: обновляем с учётом текущего языка UI
     if (name) {
-      product.name = await updateLocalizedField(product.name, String(name).trim());
+      product.name = await updateLocalizedField(
+        product.name,
+        String(name).trim(),
+        lang
+      );
     }
     if (description) {
       product.description = await updateLocalizedField(
         product.description,
-        String(description).trim()
+        String(description).trim(),
+        lang
       );
     }
 

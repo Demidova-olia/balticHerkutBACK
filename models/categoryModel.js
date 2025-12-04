@@ -2,41 +2,15 @@ const mongoose = require("mongoose");
 
 const localizedFieldSchema = new mongoose.Schema(
   {
-    ru: { type: String, trim: true },
-    en: { type: String, trim: true },
-    fi: { type: String, trim: true },
+    ru: { type: String, trim: true, default: "" },
+    en: { type: String, trim: true, default: "" },
+    fi: { type: String, trim: true, default: "" },
     _source: { type: String, enum: ["ru", "en", "fi"], default: "en" },
-    _mt: { type: mongoose.Schema.Types.Mixed },
+    // Map<boolean>, как в продукте, чтобы было единообразно
+    _mt: { type: Map, of: Boolean, default: {} },
   },
   { _id: false }
 );
-
-function guessSourceLang(s) {
-  const str = String(s || "");
-  if (/[А-Яа-яЁё]/.test(str)) return "ru";
-
-  return "en";
-}
-
-function toLocalized(val) {
-  if (val && typeof val === "object" && (val.ru || val.en || val.fi)) {
-    const src =
-      typeof val._source === "string" && ["ru", "en", "fi"].includes(val._source)
-        ? val._source
-        : (val.en && "en") || (val.ru && "ru") || (val.fi && "fi") || "en";
-    return {
-      ru: val.ru || val[src] || "",
-      en: val.en || val[src] || "",
-      fi: val.fi || val[src] || "",
-      _source: src,
-      _mt: val._mt || undefined,
-    };
-  }
-
-  const s = String(val || "").trim();
-  const src = guessSourceLang(s);
-  return { ru: s, en: s, fi: s, _source: src };
-}
 
 function slugify(input) {
   return String(input || "")
@@ -46,11 +20,14 @@ function slugify(input) {
     .replace(/^-+|-+$/g, "");
 }
 
-const FALLBACK_NAME = toLocalized({
-  en: "Imported",
+// Фиксированное fallback-имя, если вдруг совсем пусто
+const FALLBACK_NAME = {
   ru: "Импортировано",
+  en: "Imported",
   fi: "Tuotu",
-});
+  _source: "en",
+  _mt: {},
+};
 
 const categorySchema = new mongoose.Schema(
   {
@@ -60,7 +37,13 @@ const categorySchema = new mongoose.Schema(
     },
     description: {
       type: localizedFieldSchema,
-      default: {},
+      default: () => ({
+        ru: "",
+        en: "",
+        fi: "",
+        _source: "en",
+        _mt: {},
+      }),
     },
     slug: {
       type: String,
@@ -96,23 +79,29 @@ const categorySchema = new mongoose.Schema(
 );
 
 categorySchema.pre("validate", function (next) {
-
-  this.name = toLocalized(this.name);
-
+  // если по какой-то причине name пустой — подставляем FALLBACK_NAME
+  const n = this.name || {};
   const isEmptyName =
-    !this.name?.ru?.trim() &&
-    !this.name?.en?.trim() &&
-    !this.name?.fi?.trim();
-
+    !n?.ru?.trim() &&
+    !n?.en?.trim() &&
+    !n?.fi?.trim();
 
   if (isEmptyName) {
     this.name = FALLBACK_NAME;
   }
 
-  if (typeof this.description !== "undefined") {
-    this.description = toLocalized(this.description);
+  // нормализуем описание, если вообще не было
+  if (!this.description) {
+    this.description = {
+      ru: "",
+      en: "",
+      fi: "",
+      _source: "en",
+      _mt: {},
+    };
   }
 
+  // если нет slug — генерируем из name
   if (!this.slug) {
     const base =
       this.name?.[this.name?._source || "en"] ||
@@ -134,3 +123,4 @@ categorySchema.index({
 
 const Category = mongoose.model("Category", categorySchema);
 module.exports = Category;
+
