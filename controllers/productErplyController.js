@@ -27,6 +27,10 @@ function normalizeBarcode(raw) {
 
 /* =========================================================
  * IMPORT BY ERPLY ID (жёсткий импорт в БД)
+ *  - всегда тянем из Erply
+ *  - сохраняем / обновляем в Mongo через upsertFromErply
+ *  - если в Mongo уже есть другой товар с таким же barcode → 409
+ *  - цена и сток в Mongo = как в Erply
  * =======================================================*/
 const importFromErplyById = async (req, res) => {
   try {
@@ -40,9 +44,25 @@ const importFromErplyById = async (req, res) => {
       return res.status(404).json({ message: "Erply product not found" });
     }
 
-    const doc = await upsertFromErply(remote);
+    let doc;
+    try {
+      // upsertFromErply должен:
+      //  - посчитать minimal = mapErplyMinimal(remote)
+      //  - обновить price и stock из Erply
+      //  - сохранить / создать Product в Mongo
+      doc = await upsertFromErply(remote);
+    } catch (e) {
+      // нарушение уникальности штрих-кода
+      if (e && e.code === 11000 && e.keyPattern && e.keyPattern.barcode) {
+        return res.status(409).json({
+          message: "Barcode already exists in MongoDB",
+          conflictField: "barcode",
+        });
+      }
+      console.error("importFromErplyById / upsertFromErply error:", e);
+      return res.status(500).json({ message: "Failed to save product from Erply" });
+    }
 
-    // для ответов по Erply считаем базовый язык EN
     const want = "en";
     const data = doc.toObject();
     data.name_i18n = data.name;
@@ -59,6 +79,10 @@ const importFromErplyById = async (req, res) => {
 
 /* =========================================================
  * IMPORT BY BARCODE (жёсткий импорт в БД)
+ *  - всегда тянем из Erply по штрих-коду
+ *  - сохраняем / обновляем в Mongo через upsertFromErply
+ *  - если barcode уже занят другим продуктом → 409
+ *  - цена и сток в Mongo = как в Erply
  * =======================================================*/
 const importFromErplyByBarcode = async (req, res) => {
   try {
@@ -75,7 +99,19 @@ const importFromErplyByBarcode = async (req, res) => {
       return res.status(404).json({ message: "Erply product not found" });
     }
 
-    const doc = await upsertFromErply(remote);
+    let doc;
+    try {
+      doc = await upsertFromErply(remote);
+    } catch (e) {
+      if (e && e.code === 11000 && e.keyPattern && e.keyPattern.barcode) {
+        return res.status(409).json({
+          message: "Barcode already exists in MongoDB",
+          conflictField: "barcode",
+        });
+      }
+      console.error("importFromErplyByBarcode / upsertFromErply error:", e);
+      return res.status(500).json({ message: "Failed to save product from Erply" });
+    }
 
     const want = "en";
     const data = doc.toObject();
@@ -93,12 +129,27 @@ const importFromErplyByBarcode = async (req, res) => {
 
 /* =========================================================
  * ENSURE BY BARCODE
- *  - если товар есть локально → 409 + существующий
- *  - если нет → ТОЛЬКО тянем из Erply и возвращаем ЧЕРНОВИК для формы
+ *
+ *  ЛОГИКА:
+ *   1) ВСЕГДА сначала обращаемся в Erply по штрих-коду
+ *      - если там нет товара → 404
+ *   2) Строим "draft" из Erply:
+ *      - name, description
+ *      - price (цена из Erply)
+ *      - stock (остаток из Erply)
+ *      - barcode, erplyId, erplySKU
+ *   3) Проверяем Mongo:
+ *      - если уже есть продукт с таким erplyId или barcode → 409
+ *        (возвращаем и draft из Erply, и existing из Mongo)
+ *      - если нет → 200 с draft (черновик для формы создания)
+ *
+ *  Важно:
+ *   - barcode в Mongo уникален (индекс в productSchema)
+ *   - новый продукт с уже существующим barcode создать нельзя
  * =======================================================*/
 const ensureByBarcode = async (req, res) => {
   try {
-    const uiLang = pickLangFromReq(req) || "en"; // для текста сообщений
+    const uiLang = pickLangFromReq(req) || "en";
     const rawBarcode = String(req.params.barcode || "").trim();
 
     const normalized = normalizeBarcode(rawBarcode);
@@ -112,25 +163,7 @@ const ensureByBarcode = async (req, res) => {
     }
     const barcode = normalized;
 
-    // 1) проверяем, нет ли уже такого товара в локальной БД
-    const existing = await Product.findOne({ barcode });
-    if (existing) {
-      const msgDup = {
-        ru: "Товар с таким штрих-кодом уже существует",
-        en: "A product with this barcode already exists",
-        fi: "Tuote tällä viivakoodilla on jo olemassa",
-      };
-
-      const data = existing.toObject();
-      data.name_i18n = data.name;
-      data.description_i18n = data.description;
-      data.name = pickLocalized(data.name, uiLang);
-      data.description = pickLocalized(data.description, uiLang);
-
-      return res.status(409).json({ message: msgDup[uiLang] || msgDup.en, data });
-    }
-
-    // 2) тянем из Erply, НО НЕ СОЗДАЁМ продукт в Mongo
+    // 1) ВСЕГДА сначала идём в ERPLY
     let remote;
     try {
       remote = await fetchProductByBarcode(barcode);
@@ -153,10 +186,9 @@ const ensureByBarcode = async (req, res) => {
       return res.status(404).json({ message: msgNotFound[uiLang] || msgNotFound.en });
     }
 
-    // Минимальные данные из Erply
+    // 2) Минимальные данные из Erply — ИСТИНА для price, stock, barcode
     const minimal = mapErplyMinimal(remote);
 
-    // ВАЖНО: считаем, что Erply всегда отдаёт английский текст
     const name_i18n = await buildLocalizedField(minimal.nameStr, "en");
     const desc_i18n = await buildLocalizedField(minimal.descStr, "en");
 
@@ -166,24 +198,64 @@ const ensureByBarcode = async (req, res) => {
       name_i18n,
       description: pickLocalized(desc_i18n, "en"),
       description_i18n: desc_i18n,
-      price: minimal.price,
-      stock: minimal.stock,
+
+      price: minimal.price,                  // 👈 ЦЕНА ИЗ ERPLY
+      stock: minimal.stock,                  // 👈 СТОК ИЗ ERPLY
+
       brand: minimal.brand || undefined,
-      barcode: minimal.barcode || barcode,
+      barcode: minimal.barcode || barcode,   // 👈 BARCODE из Erply (если есть)
       erplyId: minimal.erplyId,
       erplySKU: minimal.erplySKU,
       erpSource: "erply",
-      // можно подсказать фронту, что логичен английский интерфейс
       forceLang: "en",
     };
 
+    // 3) Проверяем, есть ли в Mongo продукт с таким erplyId или barcode
+    const or = [];
+    if (draft.erplyId) or.push({ erplyId: draft.erplyId });
+    if (draft.barcode) or.push({ barcode: draft.barcode });
+
+    const existing = or.length
+      ? await Product.findOne({ $or: or })
+      : null;
+
+    if (existing) {
+      const msgDup = {
+        ru: "Товар с таким штрих-кодом уже существует",
+        en: "A product with this barcode already exists",
+        fi: "Tuote tällä viivakoodilla on jo olemassa",
+      };
+
+      const existingObj = existing.toObject();
+      existingObj.name_i18n = existingObj.name;
+      existingObj.description_i18n = existingObj.description;
+      existingObj.name = pickLocalized(existingObj.name, uiLang);
+      existingObj.description = pickLocalized(existingObj.description, uiLang);
+
+      // 409 — есть уже сохранённый продукт в Mongo.
+      // Отдаём:
+      //  - existing: то, что в базе (с _id)
+      //  - data: актуальный draft из Erply (price/stock/barcode)
+      return res.status(409).json({
+        message: msgDup[uiLang] || msgDup.en,
+        alreadyExists: true,
+        data: draft,          // актуальное состояние из Erply
+        existing: existingObj // сохранённый продукт из Mongo (c _id)
+      });
+    }
+
+    // 4) В Mongo ещё нет → отдаём черновик для формы создания
     const msgOk = {
       ru: "Черновик товара получен из ERPLY",
       en: "Draft product fetched from Erply",
       fi: "Luonnostuote haettu Erplystä",
     };
 
-    return res.status(200).json({ message: msgOk[uiLang] || msgOk.en, data: draft });
+    return res.status(200).json({
+      message: msgOk[uiLang] || msgOk.en,
+      alreadyExists: false,
+      data: draft,
+    });
   } catch (e) {
     console.error("ensureByBarcode error (outer catch):", e);
     return res.status(500).json({ message: "Server error" });
@@ -191,7 +263,10 @@ const ensureByBarcode = async (req, res) => {
 };
 
 /* =========================================================
- * SYNC STOCK (теперь у тебя в сервисе меняется только stock)
+ * SYNC STOCK + PRICE
+ *  - берём erplyId из Mongo
+ *  - syncPriceStockByErplyId должен сходить в Erply,
+ *    и обновить product.stock И product.price по данным Erply.
  * =======================================================*/
 const syncPriceStock = async (req, res) => {
   try {
@@ -199,12 +274,25 @@ const syncPriceStock = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid product ID" });
     }
-    const product = await Product.findById(id);
-    if (!product) return res.status(404).json({ message: "Product not found" });
-    if (!product.erplyId) return res.status(400).json({ message: "Product has no erplyId" });
 
+    const product = await Product.findById(id);
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+    if (!product.erplyId) {
+      return res.status(400).json({ message: "Product has no erplyId" });
+    }
+
+    // Ожидается, что syncPriceStockByErplyId:
+    //  - дергает Erply (fetchProductById / stock API)
+    //  - считает minimal = mapErplyMinimal(...)
+    //  - обновляет product.stock И product.price
     const result = await syncPriceStockByErplyId(product.erplyId);
-    return res.status(200).json({ message: "Synced stock from Erply", data: result });
+
+    return res.status(200).json({
+      message: "Synced stock & price from Erply",
+      data: result,
+    });
   } catch (e) {
     console.error("syncPriceStock", e);
     return res.status(500).json({ message: "Server error" });
