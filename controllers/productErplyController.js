@@ -3,8 +3,16 @@ const mongoose = require("mongoose");
 const Product = require("../models/productModel");
 
 const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
-const { upsertFromErply, syncPriceStockByErplyId } = require("../services/erplySyncService");
-const { pickLangFromReq, pickLocalized } = require("../utils/translator");
+const {
+  upsertFromErply,
+  syncPriceStockByErplyId,
+  mapErplyMinimal,
+} = require("../services/erplySyncService");
+const {
+  pickLangFromReq,
+  pickLocalized,
+  buildLocalizedField,
+} = require("../utils/translator");
 
 // 4–14 цифр
 const BARCODE_RE = /^\d{4,14}$/;
@@ -18,7 +26,7 @@ function normalizeBarcode(raw) {
 }
 
 /* =========================================================
- * IMPORT BY ERPLY ID
+ * IMPORT BY ERPLY ID (жёсткий импорт в БД)
  * =======================================================*/
 const importFromErplyById = async (req, res) => {
   try {
@@ -34,7 +42,8 @@ const importFromErplyById = async (req, res) => {
 
     const doc = await upsertFromErply(remote);
 
-    const want = pickLangFromReq(req);
+    // для ответов по Erply считаем базовый язык EN
+    const want = "en";
     const data = doc.toObject();
     data.name_i18n = data.name;
     data.description_i18n = data.description;
@@ -49,7 +58,7 @@ const importFromErplyById = async (req, res) => {
 };
 
 /* =========================================================
- * IMPORT BY BARCODE
+ * IMPORT BY BARCODE (жёсткий импорт в БД)
  * =======================================================*/
 const importFromErplyByBarcode = async (req, res) => {
   try {
@@ -68,7 +77,7 @@ const importFromErplyByBarcode = async (req, res) => {
 
     const doc = await upsertFromErply(remote);
 
-    const want = pickLangFromReq(req);
+    const want = "en";
     const data = doc.toObject();
     data.name_i18n = data.name;
     data.description_i18n = data.description;
@@ -83,11 +92,13 @@ const importFromErplyByBarcode = async (req, res) => {
 };
 
 /* =========================================================
- * ENSURE BY BARCODE (если нет – импорт из Erply)
+ * ENSURE BY BARCODE
+ *  - если товар есть локально → 409 + существующий
+ *  - если нет → ТОЛЬКО тянем из Erply и возвращаем ЧЕРНОВИК для формы
  * =======================================================*/
 const ensureByBarcode = async (req, res) => {
   try {
-    const lang = pickLangFromReq(req) || "en";
+    const uiLang = pickLangFromReq(req) || "en"; // для текста сообщений
     const rawBarcode = String(req.params.barcode || "").trim();
 
     const normalized = normalizeBarcode(rawBarcode);
@@ -97,11 +108,11 @@ const ensureByBarcode = async (req, res) => {
         en: "Invalid barcode: expected 4–14 digits",
         fi: "Virheellinen viivakoodi: odotetaan 4–14 numeroa",
       };
-      return res.status(400).json({ message: msg[lang] || msg.en });
+      return res.status(400).json({ message: msg[uiLang] || msg.en });
     }
     const barcode = normalized;
 
-    // Проверяем, нет ли уже такого товара
+    // 1) проверяем, нет ли уже такого товара в локальной БД
     const existing = await Product.findOne({ barcode });
     if (existing) {
       const msgDup = {
@@ -113,13 +124,13 @@ const ensureByBarcode = async (req, res) => {
       const data = existing.toObject();
       data.name_i18n = data.name;
       data.description_i18n = data.description;
-      data.name = pickLocalized(data.name, lang);
-      data.description = pickLocalized(data.description, lang);
+      data.name = pickLocalized(data.name, uiLang);
+      data.description = pickLocalized(data.description, uiLang);
 
-      return res.status(409).json({ message: msgDup[lang] || msgDup.en, data });
+      return res.status(409).json({ message: msgDup[uiLang] || msgDup.en, data });
     }
 
-    // Тянем из Erply
+    // 2) тянем из Erply, НО НЕ СОЗДАЁМ продукт в Mongo
     let remote;
     try {
       remote = await fetchProductByBarcode(barcode);
@@ -130,7 +141,7 @@ const ensureByBarcode = async (req, res) => {
         en: "Failed to contact Erply. Please try again later.",
         fi: "Virhe yhteydessä Erplyyn. Yritä myöhemmin uudelleen.",
       };
-      return res.status(502).json({ message: msgErplyDown[lang] || msgErplyDown.en });
+      return res.status(502).json({ message: msgErplyDown[uiLang] || msgErplyDown.en });
     }
 
     if (!remote) {
@@ -139,28 +150,40 @@ const ensureByBarcode = async (req, res) => {
         en: "Erply product not found for this barcode",
         fi: "Erply-tuotetta tällä viivakoodilla ei löytynyt",
       };
-      return res.status(404).json({ message: msgNotFound[lang] || msgNotFound.en });
+      return res.status(404).json({ message: msgNotFound[uiLang] || msgNotFound.en });
     }
 
-    // Здесь ВСЮ магию делает upsertFromErply:
-    //   - создаёт/обновляет товар
-    //   - создаёт категорию imported (если нужно)
-    //   - пишет erplyId, erplySKU и т.п.
-    const doc = await upsertFromErply(remote);
+    // Минимальные данные из Erply
+    const minimal = mapErplyMinimal(remote);
 
-    const data = doc.toObject();
-    data.name_i18n = data.name;
-    data.description_i18n = data.description;
-    data.name = pickLocalized(data.name, lang);
-    data.description = pickLocalized(data.description, lang);
+    // ВАЖНО: считаем, что Erply всегда отдаёт английский текст
+    const name_i18n = await buildLocalizedField(minimal.nameStr, "en");
+    const desc_i18n = await buildLocalizedField(minimal.descStr, "en");
 
-    const msgOk = {
-      ru: "Товар импортирован из ERPLY",
-      en: "Product imported from Erply",
-      fi: "Tuote tuotu Erplystä",
+    const draft = {
+      // НЕТ _id — это ещё НЕ сохранённый продукт
+      name: pickLocalized(name_i18n, "en"),
+      name_i18n,
+      description: pickLocalized(desc_i18n, "en"),
+      description_i18n: desc_i18n,
+      price: minimal.price,
+      stock: minimal.stock,
+      brand: minimal.brand || undefined,
+      barcode: minimal.barcode || barcode,
+      erplyId: minimal.erplyId,
+      erplySKU: minimal.erplySKU,
+      erpSource: "erply",
+      // можно подсказать фронту, что логичен английский интерфейс
+      forceLang: "en",
     };
 
-    return res.status(201).json({ message: msgOk[lang] || msgOk.en, data });
+    const msgOk = {
+      ru: "Черновик товара получен из ERPLY",
+      en: "Draft product fetched from Erply",
+      fi: "Luonnostuote haettu Erplystä",
+    };
+
+    return res.status(200).json({ message: msgOk[uiLang] || msgOk.en, data: draft });
   } catch (e) {
     console.error("ensureByBarcode error (outer catch):", e);
     return res.status(500).json({ message: "Server error" });
@@ -168,7 +191,7 @@ const ensureByBarcode = async (req, res) => {
 };
 
 /* =========================================================
- * SYNC PRICE/STOCK
+ * SYNC STOCK (теперь у тебя в сервисе меняется только stock)
  * =======================================================*/
 const syncPriceStock = async (req, res) => {
   try {
@@ -181,7 +204,7 @@ const syncPriceStock = async (req, res) => {
     if (!product.erplyId) return res.status(400).json({ message: "Product has no erplyId" });
 
     const result = await syncPriceStockByErplyId(product.erplyId);
-    return res.status(200).json({ message: "Synced price & stock", data: result });
+    return res.status(200).json({ message: "Synced stock from Erply", data: result });
   } catch (e) {
     console.error("syncPriceStock", e);
     return res.status(500).json({ message: "Server error" });
