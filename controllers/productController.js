@@ -12,7 +12,7 @@ const {
   pickLocalized,
 } = require("../utils/translator");
 
-// === barcode: 4–14 digits ===
+// 4–14 цифр
 const BARCODE_RE = /^\d{4,14}$/;
 
 function normalizeBarcode(raw) {
@@ -71,6 +71,14 @@ async function deleteCloudinaryResources(publicIds) {
   return await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
 }
 
+const normSub = (val) => {
+  if (val == null) return undefined;
+  if (typeof val !== "string") return val;
+  const t = val.trim().toLowerCase();
+  if (!t || t === "undefined" || t === "null") return undefined;
+  return val;
+};
+
 /* =========================================================
  * CREATE
  * =======================================================*/
@@ -109,8 +117,8 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Price must be a number >= 0" });
     }
 
-    const parsedStock = Number.parseInt(stock, 10);
-    if (!Number.isFinite(parsedStock) || parsedStock < 0) {
+    const parsedStock = Number(stock);
+    if (!Number.isInteger(parsedStock) || parsedStock < 0) {
       return res.status(400).json({ message: "Stock must be a non-negative integer" });
     }
 
@@ -121,14 +129,6 @@ const createProduct = async (req, res) => {
     if (!categoryDoc) {
       return res.status(400).json({ message: "Category not found" });
     }
-
-    const normSub = (val) => {
-      if (val == null) return undefined;
-      if (typeof val !== "string") return val;
-      const t = val.trim().toLowerCase();
-      if (!t || t === "undefined" || t === "null") return undefined;
-      return val;
-    };
 
     let subcategoryDoc = null;
     const normalizedSubcategory = normSub(subcategory);
@@ -147,7 +147,7 @@ const createProduct = async (req, res) => {
       }
     }
 
-    // ===== barcode =====
+    // barcode
     const bc = normalizeBarcode(barcode);
     if (bc === null) {
       return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
@@ -157,7 +157,7 @@ const createProduct = async (req, res) => {
       if (exists) return res.status(409).json({ message: "Barcode already exists" });
     }
 
-    // ===== images =====
+    // images
     let images = [];
     if (req.files?.length) {
       images = await Promise.all(
@@ -173,7 +173,7 @@ const createProduct = async (req, res) => {
       images = bodyImages.map((url) => ({ url, public_id: "default_local_image" }));
     }
 
-    // Локализованные поля: язык определяется по текущему UI (pickLangFromReq)
+    // i18n — язык берётся из UI (x-client-lang / Accept-Language)
     const name_i18n = await buildLocalizedField(String(name).trim(), lang);
     const description_i18n = await buildLocalizedField(String(description).trim(), lang);
 
@@ -190,12 +190,12 @@ const createProduct = async (req, res) => {
       isFeatured: isFeatured === "true" || isFeatured === true,
       isActive: isActive === "false" || isActive === false ? false : true,
       barcode: bc,
-      // erpSource по умолчанию "manual" – это и нужно
+      // erpSource по умолчанию "manual"
     });
 
     await product.save();
 
-    const want = pickLangFromReq(req);
+    const want = lang;
     const data = product.toObject();
     data.name_i18n = data.name;
     data.description_i18n = data.description;
@@ -332,7 +332,8 @@ const getProductsByCategory = async (req, res) => {
     });
     res.json({ message: "Products by category", data: products });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error in getProductsByCategory:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -354,7 +355,8 @@ const getProductsByCategoryAndSubcategory = async (req, res) => {
     });
     res.json({ message: "Products by category+subcategory", data: products });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error in getProductsByCategoryAndSubcategory:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -403,8 +405,8 @@ const updateProduct = async (req, res) => {
     }
 
     if (stock !== undefined) {
-      const parsedStock = Number.isInteger(Number(stock)) ? Number(stock) : NaN;
-      if (!Number.isFinite(parsedStock) || parsedStock < 0) {
+      const parsedStock = Number(stock);
+      if (!Number.isInteger(parsedStock) || parsedStock < 0) {
         return res.status(400).json({ message: "Stock must be a non-negative integer" });
       }
       product.stock = parsedStock;
@@ -417,14 +419,6 @@ const updateProduct = async (req, res) => {
       product.category = category;
       product.needsCategorization = false;
     }
-
-    const normSub = (val) => {
-      if (val == null) return undefined;
-      if (typeof val !== "string") return val;
-      const t = val.trim().toLowerCase();
-      if (!t || t === "undefined" || t === "null") return undefined;
-      return val;
-    };
 
     const normalizedSubcategory = normSub(subcategory);
     if (subcategory !== undefined) {
@@ -447,7 +441,7 @@ const updateProduct = async (req, res) => {
       product.isActive = !(isActive === "false" || isActive === false);
     }
 
-    // i18n: обновляем с учётом текущего языка UI
+    // i18n: обновляем на основе текущего языка UI
     if (name) {
       product.name = await updateLocalizedField(
         product.name,
