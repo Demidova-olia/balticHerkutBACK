@@ -1,15 +1,9 @@
 // services/erplySyncService.js
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
-const { downloadImageToBuffer } = require("../utils/downloadImageToBuffer");
 const { buildLocalizedField } = require("../utils/translator");
-const cloudinary = require("cloudinary").v2;
 
 const DEFAULT_CATEGORY_ID = process.env.ERPLY_DEFAULT_CATEGORY_ID || null;
-
-/* ============================================================================
- * Helpers: barcode / category / images
- * ========================================================================== */
 
 // 4–14 цифр
 const BARCODE_RE = /^\d{4,14}$/;
@@ -22,11 +16,6 @@ function normalizeBarcode(raw) {
   return s;
 }
 
-/**
- * Получаем id категории:
- * 1) если выставлен ERPLY_DEFAULT_CATEGORY_ID → используем его
- * 2) иначе ищем/создаём категорию со slug "imported"
- */
 async function ensureDefaultCategoryId() {
   if (DEFAULT_CATEGORY_ID) return DEFAULT_CATEGORY_ID;
 
@@ -46,66 +35,25 @@ async function ensureDefaultCategoryId() {
   return String(cat._id);
 }
 
-async function uploadRemoteImagesToCloudinary(images) {
-  const out = [];
-  for (const img of images || []) {
-    try {
-      const sourceUrl = img.sourceUrl || img.url;
-      if (!sourceUrl) continue;
+// нормализуем остаток: берём Available/freeQuantity, если < 0 — делаем 0
+function extractAvailableStock(erply) {
+  const raw =
+    erply?.freeQuantity ??
+    erply?.available ??
+    erply?.Available ??
+    erply?.amountInStock ??
+    erply?.totalInStock ??
+    erply?.neto ??
+    erply?.quantity ??
+    erply?.stock ??
+    erply?.inStock ??
+    0;
 
-      const buffer = await downloadImageToBuffer(sourceUrl);
-      const uploaded = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: "products", resource_type: "image" },
-          (err, result) => (err ? reject(err) : resolve(result))
-        );
-        stream.end(buffer);
-      });
-
-      out.push({
-        url: uploaded.secure_url || uploaded.url,
-        public_id: uploaded.public_id,
-        sourceUrl,
-      });
-    } catch (e) {
-      console.warn("[erplySync] image upload failed:", e?.message || e);
-    }
-  }
-  return out;
+  const n = Number(raw) || 0;
+  return n < 0 ? 0 : n;
 }
 
-/**
- * Собираем возможные ссылки на картинки из Erply-объекта
- */
-function extractImageCandidates(erplyProduct) {
-  const urls = new Set();
-
-  [
-    erplyProduct.pictureURL,
-    erplyProduct.pictureUrl,
-    erplyProduct.imageURL,
-    erplyProduct.imageUrl,
-    erplyProduct.image,
-    erplyProduct.largeImage,
-    erplyProduct.smallImage,
-  ]
-    .filter(Boolean)
-    .map(String)
-    .map((s) => s.trim())
-    .filter((s) => /^https?:\/\//i.test(s))
-    .forEach((u) => urls.add(u));
-
-  return Array.from(urls).map((u) => ({ sourceUrl: u }));
-}
-
-/**
- * Вытаскиваем нужные поля из Erply-ответа:
- *  - name / description
- *  - price
- *  - stock
- *  - barcode
- *  - erplyId / erplySKU
- */
+// маппим только нужные поля из ответа Erply
 function mapErplyMinimal(erplyProduct) {
   if (!erplyProduct || typeof erplyProduct !== "object") {
     throw new Error("Invalid Erply product payload");
@@ -156,14 +104,8 @@ function mapErplyMinimal(erplyProduct) {
         erplyProduct.basePrice
     ) || 0;
 
-  const stock =
-    Number(
-      erplyProduct.amountInStock ??
-        erplyProduct.totalInStock ??
-        erplyProduct.neto ??
-        erplyProduct.quantity ??
-        erplyProduct.freeQuantity
-    ) || 0;
+  // ВАЖНО: берём доступный остаток и не допускаем минуса
+  const stock = extractAvailableStock(erplyProduct);
 
   const brand =
     erplyProduct.brandName ||
@@ -182,18 +124,7 @@ function mapErplyMinimal(erplyProduct) {
   };
 }
 
-/* ============================================================================
- * UPSERT FROM ERPLY
- * ========================================================================== */
-
-/**
- * upsertFromErply(erplyProduct)
- *
- * Создаёт или обновляет товар:
- *  - ищет СНАЧАЛА по barcode, потом по erplyId
- *  - пишет только name/description/price/stock/barcode/brand + служебные поля
- *  - категория всегда одна (Imported / из env)
- */
+// создаём/обновляем товар по данным из Erply
 async function upsertFromErply(erplyProduct) {
   const {
     erplyId,
@@ -211,10 +142,6 @@ async function upsertFromErply(erplyProduct) {
   const name_i18n = await buildLocalizedField(nameStr);
   const description_i18n = await buildLocalizedField(descStr);
 
-  const imageCandidates = extractImageCandidates(erplyProduct);
-  const cloudImages = await uploadRemoteImagesToCloudinary(imageCandidates);
-
-  // --- поиск существующего товара ---
   let existing = null;
 
   if (barcode) {
@@ -224,19 +151,19 @@ async function upsertFromErply(erplyProduct) {
     existing = await Product.findOne({ erplyId });
   }
 
-  // ---------- CREATE ----------
+  // CREATE
   if (!existing) {
     const doc = await Product.create({
       name: name_i18n,
       description: description_i18n,
       price,
-      stock,
+      stock, // уже обрезано до 0, если было отрицательное
       barcode: barcode || undefined,
+
       category: categoryId,
       subcategory: undefined,
-      images: cloudImages,
+      images: [], // картинки из Erply не тянем
       brand: brand || undefined,
-      discount: undefined,
       isFeatured: false,
       isActive: true,
       averageRating: 0,
@@ -262,21 +189,19 @@ async function upsertFromErply(erplyProduct) {
     return doc;
   }
 
-  // ---------- UPDATE ----------
+  // UPDATE
   existing.name = name_i18n;
   existing.description = description_i18n;
   existing.price = price;
-  existing.stock = stock;
+  existing.stock = stock; // здесь тоже уже нет отрицательных значений
 
   if (barcode) existing.barcode = barcode;
   if (brand !== undefined) existing.brand = brand || undefined;
+
   existing.category = categoryId;
   existing.needsCategorization = true;
 
-  if (cloudImages.length) {
-    existing.images = cloudImages;
-  }
-
+  // свои картинки не трогаем
   if (erplyId) existing.erplyId = erplyId;
   if (erplySKU) existing.erplySKU = erplySKU;
 
@@ -300,42 +225,20 @@ async function upsertFromErply(erplyProduct) {
   return existing;
 }
 
-/* ============================================================================
- * LIGHT SYNC (price + stock)
- * ========================================================================== */
-
+// синк ТОЛЬКО остатка по erplyId (кнопка на странице продукта)
 async function syncPriceStockByErplyId(erplyId) {
   const { fetchProductById } = require("../utils/erplyClient");
   const remote = await fetchProductById(erplyId);
   if (!remote) return null;
 
-  const priceFromErp =
-    Number(
-      remote.priceWithVat ??
-        remote.priceWithVAT ??
-        remote.price ??
-        remote.priceOriginal ??
-        remote.basePrice
-    ) || 0;
-
-  const stockFromErp =
-    Number(
-      remote.amountInStock ??
-        remote.totalInStock ??
-        remote.neto ??
-        remote.quantity ??
-        remote.freeQuantity
-    ) || 0;
+  // берём только Available/доступный остаток, НЕ цену
+  const stockFromErp = extractAvailableStock(remote);
 
   const doc = await Product.findOne({ erplyId: String(erplyId) });
   if (!doc) return null;
 
   let changed = false;
 
-  if (Number.isFinite(priceFromErp) && priceFromErp !== doc.price) {
-    doc.price = priceFromErp;
-    changed = true;
-  }
   if (Number.isFinite(stockFromErp) && stockFromErp !== doc.stock) {
     doc.stock = stockFromErp;
     changed = true;
@@ -346,7 +249,7 @@ async function syncPriceStockByErplyId(erplyId) {
     await doc.save();
   }
 
-  return { _id: doc._id, changed, price: doc.price, stock: doc.stock };
+  return { _id: doc._id, changed, stock: doc.stock };
 }
 
-module.exports = { upsertFromErply, syncPriceStockByErplyId, mapErplyMinimal, };
+module.exports = { upsertFromErply, syncPriceStockByErplyId, mapErplyMinimal };

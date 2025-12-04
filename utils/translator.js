@@ -1,5 +1,3 @@
-
-
 const crypto = require("crypto");
 
 const cache = new Map();
@@ -7,15 +5,17 @@ const key = (txt, from, to) =>
   crypto.createHash("sha1").update(`${from}:${to}:${txt}`).digest("hex");
 
 const hasFetch = typeof fetch === "function";
+
 async function requestJSON(url, options) {
   if (!hasFetch) {
-
     throw new Error("fetch is not available in this Node runtime");
   }
-  const res = await fetch(url, options);
 
+  const res = await fetch(url, options);
   const ct = res.headers.get("content-type") || "";
+
   if (ct.includes("application/json")) return res.json();
+
   const text = await res.text();
   try {
     return JSON.parse(text);
@@ -41,7 +41,6 @@ async function translateText(text, from, to) {
 
   const deeplKey = process.env.DEEPL_KEY;
 
-  // --- DeepL ---
   if (deeplKey) {
     try {
       const body = new URLSearchParams({
@@ -101,10 +100,19 @@ async function translateMixedText(input, target) {
   return out.join("");
 }
 
-async function buildLocalizedField(latestText) {
-  const src = detectLang(latestText);
+/**
+ * buildLocalizedField(latestText, [sourceLang])
+ * latestText – то, что пользователь ввёл
+ * sourceLang – явный язык ("ru" | "en" | "fi"), если не передан – авто detectLang
+ */
+async function buildLocalizedField(latestText, sourceLang) {
+  const srcCandidates = ["ru", "en", "fi"];
+  const src =
+    srcCandidates.includes(sourceLang) ? sourceLang : detectLang(latestText);
+
   const langs = ["ru", "en", "fi"];
   const obj = { ru: "", en: "", fi: "", _source: src, _mt: {} };
+
   for (const to of langs) {
     if (to === src) {
       obj[to] = String(latestText);
@@ -114,7 +122,7 @@ async function buildLocalizedField(latestText) {
         obj[to] = await translateMixedText(latestText, to);
         obj._mt[to] = true;
       } catch {
-        obj[to] = String(latestText); // graceful fallback
+        obj[to] = String(latestText);
         obj._mt[to] = true;
       }
     }
@@ -122,9 +130,19 @@ async function buildLocalizedField(latestText) {
   return obj;
 }
 
-async function updateLocalizedField(existing, latestText) {
-  const src = detectLang(latestText);
+/**
+ * updateLocalizedField(existing, latestText, [sourceLang])
+ * existing – существующая LocalizedString
+ * latestText – новое значение от пользователя
+ * sourceLang – явный язык ("ru" | "en" | "fi"), если не передан – авто detectLang
+ */
+async function updateLocalizedField(existing, latestText, sourceLang) {
+  const srcCandidates = ["ru", "en", "fi"];
+  const src =
+    srcCandidates.includes(sourceLang) ? sourceLang : detectLang(latestText);
+
   const base = existing || { ru: "", en: "", fi: "", _source: src, _mt: {} };
+
   base[src] = String(latestText);
   base._source = src;
   base._mt = base._mt || {};
@@ -142,6 +160,7 @@ async function updateLocalizedField(existing, latestText) {
       }
     }
   }
+
   return base;
 }
 
@@ -152,7 +171,7 @@ function pickLangFromReq(req) {
   const candidates = []
     .concat(client.split(","))
     .concat(accept.split(","))
-    .map((s) => s.trim().split(";")[0]) 
+    .map((s) => s.trim().split(";")[0])
     .map((s) => s.split("-")[0])
     .filter(Boolean);
 
