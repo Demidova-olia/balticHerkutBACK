@@ -12,6 +12,8 @@ const upload = require("../middlewares/multer");
 const router = express.Router();
 
 /** ===== Erply import/sync (добавить до параметрических) ===== */
+
+// жёсткий импорт по Erply ID
 router.post(
   "/import/erply/:erplyId",
   authMiddleware,
@@ -19,11 +21,28 @@ router.post(
   erplyCtrl.importFromErplyById
 );
 
+// жёсткий импорт по штрих-коду
 router.post(
   "/import-by-barcode/:barcode",
   authMiddleware,
   rolesMiddleware(ROLES.ADMIN),
   erplyCtrl.importFromErplyByBarcode
+);
+
+// DEBUG: сырой ответ Erply по ID
+router.get(
+  "/debug/erply/by-id/:erplyId",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  erplyCtrl.debugErplyById
+);
+
+// DEBUG: сырой ответ Erply по BARCODE
+router.get(
+  "/debug/erply/by-barcode/:barcode",
+  authMiddleware,
+  rolesMiddleware(ROLES.ADMIN),
+  erplyCtrl.debugErplyByBarcode
 );
 
 // если товара нет — создаст из Erply, иначе вернёт локальный
