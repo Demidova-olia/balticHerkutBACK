@@ -24,9 +24,7 @@ function normalizeBarcode(raw) {
   return BARCODE_RE.test(s) ? s : null;
 }
 
-/* =========================================================
- * DEBUG: RAW ERPLY — по ID
- * =======================================================*/
+/* DEBUG BY ID */
 const debugErplyById = async (req, res) => {
   try {
     const { erplyId } = req.params;
@@ -44,9 +42,7 @@ const debugErplyById = async (req, res) => {
   }
 };
 
-/* =========================================================
- * DEBUG: RAW ERPLY — по BARCODE
- * =======================================================*/
+/* DEBUG BY BARCODE */
 const debugErplyByBarcode = async (req, res) => {
   try {
     const { barcode } = req.params;
@@ -67,9 +63,7 @@ const debugErplyByBarcode = async (req, res) => {
   }
 };
 
-/* =========================================================
- * IMPORT BY ERPLY ID
- * =======================================================*/
+/* IMPORT BY ERPLY ID */
 const importFromErplyById = async (req, res) => {
   try {
     const { erplyId } = req.params;
@@ -105,16 +99,15 @@ const importFromErplyById = async (req, res) => {
   }
 };
 
-/* =========================================================
- * IMPORT BY BARCODE
- * =======================================================*/
+/* IMPORT BY BARCODE */
 const importFromErplyByBarcode = async (req, res) => {
   try {
     const { barcode } = req.params;
     const normalized = normalizeBarcode(barcode);
 
-    if (!normalized)
+    if (!normalized) {
       return res.status(400).json({ message: "Invalid barcode: expected 4–14 digits" });
+    }
 
     const remote = await fetchProductByBarcode(normalized);
     if (!remote) return res.status(404).json({ message: "Erply product not found" });
@@ -146,9 +139,7 @@ const importFromErplyByBarcode = async (req, res) => {
   }
 };
 
-/* =========================================================
- * ENSURE BY BARCODE
- * =======================================================*/
+/* ENSURE BY BARCODE */
 const ensureByBarcode = async (req, res) => {
   try {
     const uiLang = pickLangFromReq(req) || "en";
@@ -166,7 +157,6 @@ const ensureByBarcode = async (req, res) => {
       });
     }
 
-    // 1) Сначала всегда идём в ERPLY
     let remote;
     try {
       remote = await fetchProductByBarcode(normalized);
@@ -186,7 +176,6 @@ const ensureByBarcode = async (req, res) => {
       });
     }
 
-    // 2) Строим итоговые данные из Erply
     const minimal = mapErplyMinimal(remote);
 
     const name_i18n = await buildLocalizedField(minimal.nameStr, "en");
@@ -197,8 +186,8 @@ const ensureByBarcode = async (req, res) => {
       name_i18n,
       description: pickLocalized(desc_i18n, "en"),
       description_i18n: desc_i18n,
-      price: minimal.price, // цена из Erply
-      stock: minimal.stock, // остаток из Erply
+      price: minimal.price,
+      stock: minimal.stock,
       brand: minimal.brand || undefined,
       barcode: minimal.barcode || normalized,
       erplyId: minimal.erplyId,
@@ -207,10 +196,11 @@ const ensureByBarcode = async (req, res) => {
       forceLang: "en",
     };
 
-    // 3) Проверяем Mongo по erplyId или barcode
-    const existing = await Product.findOne({
-      $or: [{ erplyId: draft.erplyId }, { barcode: draft.barcode }],
-    });
+    const or = [];
+    if (draft.erplyId) or.push({ erplyId: draft.erplyId });
+    if (draft.barcode) or.push({ barcode: draft.barcode });
+
+    const existing = or.length ? await Product.findOne({ $or: or }) : null;
 
     if (existing) {
       const existingObj = existing.toObject();
@@ -225,12 +215,11 @@ const ensureByBarcode = async (req, res) => {
             ? "Товар с таким штрих-кодом уже существует"
             : "A product with this barcode already exists",
         alreadyExists: true,
-        data: draft, // актуальные данные из Erply
-        existing: existingObj, // Mongo product
+        data: draft,
+        existing: existingObj,
       });
     }
 
-    // 4) Mongo пуст → отдаём черновик
     return res.status(200).json({
       message:
         uiLang === "ru"
@@ -245,9 +234,7 @@ const ensureByBarcode = async (req, res) => {
   }
 };
 
-/* =========================================================
- * SYNC STOCK + PRICE FROM ERPLY
- * =======================================================*/
+/* SYNC STOCK + PRICE */
 const syncPriceStock = async (req, res) => {
   try {
     const { id } = req.params;

@@ -82,9 +82,7 @@ async function call(request, params = {}) {
     clientCode: ERPLY_CLIENT_CODE,
     request,
     sessionKey,
-    ...Object.fromEntries(
-      Object.entries(params).map(([k, v]) => [k, String(v)])
-    ),
+    ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   });
 
   const { data } = await axios.post(ERPLY_BASE, payload);
@@ -119,39 +117,38 @@ async function fetchProductById(erplyId) {
 /**
  * Поиск товара по EAN/штрих-коду.
  * 1) Нормализуем: оставляем только цифры.
- * 2) Делаем getProducts по ean, code2, code.
- * 3) Из всех найденных записей выбираем ту, у которой
- *    extractBarcodeFromErplyRecord(rec) === запрошенному штрих-коду.
- * Если ни одна запись так не совпала — возвращаем null.
+ * 2) Пытаемся getProducts с разными полями (без active:1!):
+ *    - ean / EAN / eanCode
+ *    - code2
+ *    - code
+ *    - barcode
+ * 3) Из найденных записей выбираем ту, у которой
+ *    extractBarcodeFromErplyRecord(rec) === запрошенному коду.
  */
 async function fetchProductByBarcode(barcode) {
   const bc = String(barcode || "").replace(/\D+/g, "");
   if (!DIGIT_BARCODE_RE.test(bc)) return null;
 
+  const tries = [
+    { ean: bc },
+    { EAN: bc },
+    { eanCode: bc },
+    { code2: bc },
+    { code: bc },
+    { barcode: bc },
+  ];
+
   let found = [];
 
-  try {
-    const byEan = await call("getProducts", { ean: bc, active: 1 });
-    if (Array.isArray(byEan) && byEan.length) found = found.concat(byEan);
-  } catch {
-    /* ignore */
-  }
-
-  if (!found.length) {
+  for (const params of tries) {
+    if (found.length) break;
     try {
-      const byCode2 = await call("getProducts", { code2: bc, active: 1 });
-      if (Array.isArray(byCode2) && byCode2.length) found = found.concat(byCode2);
+      const recs = await call("getProducts", params);
+      if (Array.isArray(recs) && recs.length) {
+        found = found.concat(recs);
+      }
     } catch {
-      /* ignore */
-    }
-  }
-
-  if (!found.length) {
-    try {
-      const byCode = await call("getProducts", { code: bc, active: 1 });
-      if (Array.isArray(byCode) && byCode.length) found = found.concat(byCode);
-    } catch {
-      /* ignore */
+      // игнорируем ошибку этого варианта и идём к следующему
     }
   }
 
@@ -178,4 +175,3 @@ module.exports = {
   fetchProductByBarcode,
   extractBarcodeFromErplyRecord,
 };
-
