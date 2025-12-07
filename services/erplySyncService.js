@@ -2,19 +2,22 @@
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
 const { buildLocalizedField } = require("../utils/translator");
-const { extractBarcodeFromErplyRecord } = require("../utils/erplyClient");
 
 const DEFAULT_CATEGORY_ID = process.env.ERPLY_DEFAULT_CATEGORY_ID || null;
 
 // 4–14 цифр
 const BARCODE_RE = /^\d{4,14}$/;
 
+/**
+ * Нормализуем штрих-код:
+ *  - оставляем только цифры
+ *  - проверяем длину 4–14
+ */
 function normalizeBarcode(raw) {
   if (raw == null) return undefined;
-  const s = String(raw).trim();
-  if (!s) return undefined;
-  if (!BARCODE_RE.test(s)) return undefined;
-  return s;
+  const digits = String(raw).replace(/\D+/g, "");
+  if (!digits) return undefined;
+  return BARCODE_RE.test(digits) ? digits : undefined;
 }
 
 async function ensureDefaultCategoryId() {
@@ -72,8 +75,9 @@ function mapErplyMinimal(erplyProduct) {
     erplyProduct.sku ??
     null;
 
-  // в первую очередь используем тот штрих-код,
-  // который рассчитали в erplyClient (точное совпадение по EAN)
+  // В первую очередь используем штрихкод,
+  // который уже вычислен в erplyClient (__extractedBarcode),
+  // а дальше — поля из самого продукта.
   const barcodeRaw =
     erplyProduct.__extractedBarcode ??
     erplyProduct.EAN ??

@@ -18,6 +18,10 @@ let cachedAt = 0;
 // 4–14 цифр
 const DIGIT_BARCODE_RE = /^\d{4,14}$/;
 
+/**
+ * Достаём штрих-код из записи Erply.
+ * Берём ean / code2 / code и т.п., оставляем только цифры.
+ */
 function extractBarcodeFromErplyRecord(rec) {
   if (!rec) return undefined;
 
@@ -82,7 +86,9 @@ async function call(request, params = {}) {
     clientCode: ERPLY_CLIENT_CODE,
     request,
     sessionKey,
-    ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
+    ...Object.fromEntries(
+      Object.entries(params).map(([k, v]) => [k, String(v)])
+    ),
   });
 
   const { data } = await axios.post(ERPLY_BASE, payload);
@@ -97,6 +103,9 @@ async function call(request, params = {}) {
   return data.records || [];
 }
 
+/**
+ * Поиск по productID / code (старое поведение) – тут всё как раньше.
+ */
 async function fetchProductById(erplyId) {
   const id = String(erplyId || "").trim();
   if (!id) return null;
@@ -115,59 +124,42 @@ async function fetchProductById(erplyId) {
 }
 
 /**
- * Поиск товара по EAN/штрих-коду.
+ * Поиск товара по EAN / штрих-коду (как в Postman):
+ *
  * 1) Нормализуем: оставляем только цифры.
- * 2) Пытаемся getProducts с разными полями (без active:1!):
- *    - ean / EAN / eanCode
- *    - code2
- *    - code
- *    - barcode
- * 3) Из найденных записей выбираем ту, у которой
- *    extractBarcodeFromErplyRecord(rec) === запрошенному коду.
+ * 2) Делаем getProducts({ code2: bc, active: 1 }).
+ * 3) Если пусто – пробуем getProducts({ code: bc, active: 1 }).
+ * 4) Берём первую запись и дописываем __extractedBarcode.
  */
 async function fetchProductByBarcode(barcode) {
   const bc = String(barcode || "").replace(/\D+/g, "");
   if (!DIGIT_BARCODE_RE.test(bc)) return null;
 
-  const tries = [
-    { ean: bc },
-    { EAN: bc },
-    { eanCode: bc },
-    { code2: bc },
-    { code: bc },
-    { barcode: bc },
-  ];
+  let recs = [];
 
-  let found = [];
+  // ТОЧНО ТАК ЖЕ, как у тебя сработало в Postman:
+  // request: getProducts, code2: 8711000571958, active: 1
+  try {
+    recs = await call("getProducts", { code2: bc, active: 1 });
+  } catch {
+    recs = [];
+  }
 
-  for (const params of tries) {
-    if (found.length) break;
+  // fallback: иногда штрих-код лежит в code
+  if (!recs.length) {
     try {
-      const recs = await call("getProducts", params);
-      if (Array.isArray(recs) && recs.length) {
-        found = found.concat(recs);
-      }
+      recs = await call("getProducts", { code: bc, active: 1 });
     } catch {
-      // игнорируем ошибку этого варианта и идём к следующему
+      recs = [];
     }
   }
 
-  if (!found.length) return null;
+  if (!recs.length) return null;
 
-  let best = null;
+  const rec = recs[0];
+  rec.__extractedBarcode = extractBarcodeFromErplyRecord(rec);
 
-  for (const rec of found) {
-    const extracted = extractBarcodeFromErplyRecord(rec);
-    rec.__extractedBarcode = extracted;
-    if (extracted === bc) {
-      best = rec;
-      break;
-    }
-  }
-
-  if (!best) return null;
-
-  return best;
+  return rec;
 }
 
 module.exports = {
