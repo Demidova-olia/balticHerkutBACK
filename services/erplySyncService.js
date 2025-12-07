@@ -2,6 +2,7 @@
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
 const { buildLocalizedField } = require("../utils/translator");
+const { extractBarcodeFromErplyRecord } = require("../utils/erplyClient");
 
 const DEFAULT_CATEGORY_ID = process.env.ERPLY_DEFAULT_CATEGORY_ID || null;
 
@@ -71,7 +72,10 @@ function mapErplyMinimal(erplyProduct) {
     erplyProduct.sku ??
     null;
 
+  // в первую очередь используем тот штрих-код,
+  // который рассчитали в erplyClient (точное совпадение по EAN)
   const barcodeRaw =
+    erplyProduct.__extractedBarcode ??
     erplyProduct.EAN ??
     erplyProduct.ean ??
     erplyProduct.eanCode ??
@@ -225,31 +229,44 @@ async function upsertFromErply(erplyProduct) {
   return existing;
 }
 
-// синк ТОЛЬКО остатка по erplyId (кнопка на странице продукта)
+// синк остатка И ЦЕНЫ по erplyId (кнопка на странице продукта)
 async function syncPriceStockByErplyId(erplyId) {
   const { fetchProductById } = require("../utils/erplyClient");
   const remote = await fetchProductById(erplyId);
   if (!remote) return null;
 
-  // берём только Available/доступный остаток, НЕ цену
-  const stockFromErp = extractAvailableStock(remote);
+  const minimal = mapErplyMinimal(remote);
+  const stockFromErp = minimal.stock;
+  const priceFromErp = minimal.price;
 
   const doc = await Product.findOne({ erplyId: String(erplyId) });
   if (!doc) return null;
 
-  let changed = false;
+  let changedStock = false;
+  let changedPrice = false;
 
   if (Number.isFinite(stockFromErp) && stockFromErp !== doc.stock) {
     doc.stock = stockFromErp;
-    changed = true;
+    changedStock = true;
   }
 
-  if (changed) {
+  if (Number.isFinite(priceFromErp) && priceFromErp !== doc.price) {
+    doc.price = priceFromErp;
+    changedPrice = true;
+  }
+
+  if (changedStock || changedPrice) {
     doc.erplySyncedAt = new Date();
     await doc.save();
   }
 
-  return { _id: doc._id, changed, stock: doc.stock };
+  return {
+    _id: doc._id,
+    changedStock,
+    changedPrice,
+    stock: doc.stock,
+    price: doc.price,
+  };
 }
 
 module.exports = { upsertFromErply, syncPriceStockByErplyId, mapErplyMinimal };

@@ -15,17 +15,20 @@ if (!ERPLY_BASE || !ERPLY_CLIENT_CODE || !ERPLY_USERNAME || !ERPLY_PASSWORD) {
 let cachedKey = null;
 let cachedAt = 0;
 
-// те же 4–14 цифр, что и в сервисе
+// 4–14 цифр
 const DIGIT_BARCODE_RE = /^\d{4,14}$/;
 
 function extractBarcodeFromErplyRecord(rec) {
   if (!rec) return undefined;
+
   const candidatesRaw = [
     rec.ean,
     rec.EAN,
     rec.eanCode,
     rec.ean_code,
     rec.EANCode,
+    rec.eanCode2,
+    rec.EANCode2,
     rec.upc,
     rec.UPC,
     rec.gtin,
@@ -45,6 +48,7 @@ function extractBarcodeFromErplyRecord(rec) {
     const digits = String(rec.code).replace(/\D+/g, "");
     if (DIGIT_BARCODE_RE.test(digits)) return digits;
   }
+
   return undefined;
 }
 
@@ -65,6 +69,7 @@ async function getSessionKey() {
   if (!data || data.status?.responseStatus !== "ok") {
     throw new Error("Erply auth failed");
   }
+
   cachedKey = data.records?.[0]?.sessionKey;
   cachedAt = now;
   return cachedKey;
@@ -72,6 +77,7 @@ async function getSessionKey() {
 
 async function call(request, params = {}) {
   const sessionKey = await getSessionKey();
+
   const payload = new URLSearchParams({
     clientCode: ERPLY_CLIENT_CODE,
     request,
@@ -80,13 +86,16 @@ async function call(request, params = {}) {
       Object.entries(params).map(([k, v]) => [k, String(v)])
     ),
   });
+
   const { data } = await axios.post(ERPLY_BASE, payload);
+
   if (!data || data.status?.responseStatus !== "ok") {
     const msg = data?.status?.errorCode
       ? `Erply ${request} error ${data.status.errorCode}`
       : `Erply request failed: ${request}`;
     throw new Error(msg);
   }
+
   return data.records || [];
 }
 
@@ -97,7 +106,6 @@ async function fetchProductById(erplyId) {
   let recs = await call("getProducts", { productID: id, active: 1 });
 
   if (!recs || !recs.length) {
-    // fallback: ищем по code
     recs = await call("getProducts", { code: id, active: 1 });
   }
 
@@ -108,23 +116,61 @@ async function fetchProductById(erplyId) {
   return rec;
 }
 
+/**
+ * Поиск товара по EAN/штрих-коду.
+ * 1) Нормализуем: оставляем только цифры.
+ * 2) Делаем getProducts по ean, code2, code.
+ * 3) Из всех найденных записей выбираем ту, у которой
+ *    extractBarcodeFromErplyRecord(rec) === запрошенному штрих-коду.
+ * Если ни одна запись так не совпала — возвращаем null.
+ */
 async function fetchProductByBarcode(barcode) {
   const bc = String(barcode || "").replace(/\D+/g, "");
   if (!DIGIT_BARCODE_RE.test(bc)) return null;
 
-  let recs = await call("getProducts", { ean: bc, active: 1 }).catch(() => []);
-  if (!recs?.length) {
-    recs = await call("getProducts", { code2: bc, active: 1 }).catch(() => []);
-  }
-  if (!recs?.length) {
-    recs = await call("getProducts", { code: bc, active: 1 }).catch(() => []);
+  let found = [];
+
+  try {
+    const byEan = await call("getProducts", { ean: bc, active: 1 });
+    if (Array.isArray(byEan) && byEan.length) found = found.concat(byEan);
+  } catch {
+    /* ignore */
   }
 
-  const rec = recs?.[0] || null;
-  if (!rec) return null;
+  if (!found.length) {
+    try {
+      const byCode2 = await call("getProducts", { code2: bc, active: 1 });
+      if (Array.isArray(byCode2) && byCode2.length) found = found.concat(byCode2);
+    } catch {
+      /* ignore */
+    }
+  }
 
-  rec.__extractedBarcode = extractBarcodeFromErplyRecord(rec);
-  return rec;
+  if (!found.length) {
+    try {
+      const byCode = await call("getProducts", { code: bc, active: 1 });
+      if (Array.isArray(byCode) && byCode.length) found = found.concat(byCode);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!found.length) return null;
+
+  let best = null;
+
+  for (const rec of found) {
+    const extracted = extractBarcodeFromErplyRecord(rec);
+    rec.__extractedBarcode = extracted;
+    if (extracted === bc) {
+      best = rec;
+      break;
+    }
+  }
+
+  if (!best) return null;
+
+  return best;
 }
 
 module.exports = {
@@ -132,3 +178,4 @@ module.exports = {
   fetchProductByBarcode,
   extractBarcodeFromErplyRecord,
 };
+
