@@ -2,12 +2,18 @@
 const mongoose = require("mongoose");
 const Product = require("../models/productModel");
 
-const { fetchProductById, fetchProductByBarcode } = require("../utils/erplyClient");
+const {
+  fetchProductById,
+  fetchProductByBarcode,
+  fetchStockByProductId, // 👈 ДОБАВИЛИ
+} = require("../utils/erplyClient");
+
 const {
   upsertFromErply,
   syncPriceStockByErplyId,
   mapErplyMinimal,
 } = require("../services/erplySyncService");
+
 const {
   pickLangFromReq,
   pickLocalized,
@@ -196,6 +202,19 @@ const ensureByBarcode = async (req, res) => {
     // 2) Строим данные из Erply
     const minimal = mapErplyMinimal(remote);
 
+    // 👇 ДОБАВЛЕНО: тянем реальный сток через getProductStock
+    let stock = minimal.stock;
+    if (minimal.erplyId) {
+      try {
+        const stockFromErp = await fetchStockByProductId(minimal.erplyId);
+        if (Number.isFinite(stockFromErp)) {
+          stock = stockFromErp;
+        }
+      } catch (err) {
+        console.error("ensureByBarcode/fetchStockByProductId:", err?.message || err);
+      }
+    }
+
     const name_i18n = await buildLocalizedField(minimal.nameStr, "en");
     const desc_i18n = await buildLocalizedField(minimal.descStr, "en");
 
@@ -205,7 +224,7 @@ const ensureByBarcode = async (req, res) => {
       description: pickLocalized(desc_i18n, "en"),
       description_i18n: desc_i18n,
       price: minimal.price,
-      stock: minimal.stock,
+      stock, // 👈 тут теперь настоящий остаток из Erply
       brand: minimal.brand || undefined,
       barcode: minimal.barcode || normalized,
       erplyId: minimal.erplyId,
@@ -237,7 +256,7 @@ const ensureByBarcode = async (req, res) => {
       return res.status(409).json({
         message: msgDup[uiLang] || msgDup.en,
         alreadyExists: true,
-        data: draft,      // актуальные данные из Erply
+        data: draft,          // актуальные данные из Erply (включая stock)
         existing: existingObj, // то, что в Mongo
       });
     }
@@ -297,4 +316,3 @@ module.exports = {
   ensureByBarcode,
   syncPriceStock,
 };
-

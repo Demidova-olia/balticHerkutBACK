@@ -15,32 +15,23 @@ if (!ERPLY_BASE || !ERPLY_CLIENT_CODE || !ERPLY_USERNAME || !ERPLY_PASSWORD) {
 let cachedKey = null;
 let cachedAt = 0;
 
-// 4–14 цифр
+// 4–14 digits only
 const DIGIT_BARCODE_RE = /^\d{4,14}$/;
 
 /**
- * Достаём штрих-код из записи Erply.
- * Берём ean / code2 / code и т.п., оставляем только цифры.
+ * Correct EAN extraction from product record.
  */
 function extractBarcodeFromErplyRecord(rec) {
   if (!rec) return undefined;
 
   const candidatesRaw = [
-    rec.ean,
-    rec.EAN,
-    rec.eanCode,
-    rec.ean_code,
-    rec.EANCode,
-    rec.eanCode2,
-    rec.EANCode2,
-    rec.upc,
-    rec.UPC,
-    rec.gtin,
-    rec.GTIN,
-    rec.barcode,
-    rec.Barcode,
-    rec.code2,
-    rec.CODE2,
+    rec.ean, rec.EAN,
+    rec.eanCode, rec.ean_code, rec.EANCode,
+    rec.eanCode2, rec.EANCode2,
+    rec.upc, rec.UPC,
+    rec.gtin, rec.GTIN,
+    rec.barcode, rec.Barcode,
+    rec.code2, rec.CODE2,
   ].filter(Boolean);
 
   for (const v of candidatesRaw) {
@@ -86,9 +77,7 @@ async function call(request, params = {}) {
     clientCode: ERPLY_CLIENT_CODE,
     request,
     sessionKey,
-    ...Object.fromEntries(
-      Object.entries(params).map(([k, v]) => [k, String(v)])
-    ),
+    ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   });
 
   const { data } = await axios.post(ERPLY_BASE, payload);
@@ -104,7 +93,7 @@ async function call(request, params = {}) {
 }
 
 /**
- * Поиск по productID / code (старое поведение) – тут всё как раньше.
+ * Fetch by productID or code.
  */
 async function fetchProductById(erplyId) {
   const id = String(erplyId || "").trim();
@@ -112,11 +101,11 @@ async function fetchProductById(erplyId) {
 
   let recs = await call("getProducts", { productID: id, active: 1 });
 
-  if (!recs || !recs.length) {
+  if (!recs?.length) {
     recs = await call("getProducts", { code: id, active: 1 });
   }
 
-  const rec = recs && recs[0] ? recs[0] : null;
+  const rec = recs?.[0] || null;
   if (!rec) return null;
 
   rec.__extractedBarcode = extractBarcodeFromErplyRecord(rec);
@@ -124,12 +113,7 @@ async function fetchProductById(erplyId) {
 }
 
 /**
- * Поиск товара по EAN / штрих-коду (как в Postman):
- *
- * 1) Нормализуем: оставляем только цифры.
- * 2) Делаем getProducts({ code2: bc, active: 1 }).
- * 3) Если пусто – пробуем getProducts({ code: bc, active: 1 }).
- * 4) Берём первую запись и дописываем __extractedBarcode.
+ * Correct barcode lookup (same logic that works in Postman).
  */
 async function fetchProductByBarcode(barcode) {
   const bc = String(barcode || "").replace(/\D+/g, "");
@@ -137,21 +121,16 @@ async function fetchProductByBarcode(barcode) {
 
   let recs = [];
 
-  // ТОЧНО ТАК ЖЕ, как у тебя сработало в Postman:
-  // request: getProducts, code2: 8711000571958, active: 1
+  // First: search by code2 (EAN Code)
   try {
     recs = await call("getProducts", { code2: bc, active: 1 });
-  } catch {
-    recs = [];
-  }
+  } catch {}
 
-  // fallback: иногда штрих-код лежит в code
+  // Fallback: search by code
   if (!recs.length) {
     try {
       recs = await call("getProducts", { code: bc, active: 1 });
-    } catch {
-      recs = [];
-    }
+    } catch {}
   }
 
   if (!recs.length) return null;
@@ -162,8 +141,45 @@ async function fetchProductByBarcode(barcode) {
   return rec;
 }
 
+/**
+ * Fetch REAL STOCK from ERPLY via getProductStock.
+ * Sums all warehouses.
+ */
+async function fetchStockByProductId(productId) {
+  const id = String(productId || "").trim();
+  if (!id) return 0;
+
+  let records = [];
+  try {
+    records = await call("getProductStock", { productID: id });
+  } catch {
+    return 0;
+  }
+
+  if (!Array.isArray(records) || !records.length) return 0;
+
+  let total = 0;
+
+  for (const r of records) {
+    const raw =
+      r.freeQuantity ??
+      r.available ??
+      r.totalInStock ??
+      r.amountInStock ??
+      r.quantity ??
+      r.inStock ??
+      0;
+
+    const n = Number(raw) || 0;
+    total += n;
+  }
+
+  return total < 0 ? 0 : total;
+}
+
 module.exports = {
   fetchProductById,
   fetchProductByBarcode,
+  fetchStockByProductId,
   extractBarcodeFromErplyRecord,
 };

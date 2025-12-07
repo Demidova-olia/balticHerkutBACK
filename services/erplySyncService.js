@@ -2,22 +2,19 @@
 const Product = require("../models/productModel");
 const Category = require("../models/categoryModel");
 const { buildLocalizedField } = require("../utils/translator");
+const { fetchStockByProductId } = require("../utils/erplyClient");
 
 const DEFAULT_CATEGORY_ID = process.env.ERPLY_DEFAULT_CATEGORY_ID || null;
 
 // 4–14 цифр
 const BARCODE_RE = /^\d{4,14}$/;
 
-/**
- * Нормализуем штрих-код:
- *  - оставляем только цифры
- *  - проверяем длину 4–14
- */
 function normalizeBarcode(raw) {
   if (raw == null) return undefined;
-  const digits = String(raw).replace(/\D+/g, "");
-  if (!digits) return undefined;
-  return BARCODE_RE.test(digits) ? digits : undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined;
+  if (!BARCODE_RE.test(s)) return undefined;
+  return s;
 }
 
 async function ensureDefaultCategoryId() {
@@ -39,7 +36,7 @@ async function ensureDefaultCategoryId() {
   return String(cat._id);
 }
 
-// нормализуем остаток: берём Available/freeQuantity, если < 0 — делаем 0
+// нормализуем остаток, если вдруг Erply вернёт какие-то поля в getProducts
 function extractAvailableStock(erply) {
   const raw =
     erply?.freeQuantity ??
@@ -57,7 +54,7 @@ function extractAvailableStock(erply) {
   return n < 0 ? 0 : n;
 }
 
-// маппим только нужные поля из ответа Erply
+// маппим только нужные поля из ответа getProducts
 function mapErplyMinimal(erplyProduct) {
   if (!erplyProduct || typeof erplyProduct !== "object") {
     throw new Error("Invalid Erply product payload");
@@ -75,9 +72,7 @@ function mapErplyMinimal(erplyProduct) {
     erplyProduct.sku ??
     null;
 
-  // В первую очередь используем штрихкод,
-  // который уже вычислен в erplyClient (__extractedBarcode),
-  // а дальше — поля из самого продукта.
+  // сначала используем штрих-код, который посчитали в erplyClient
   const barcodeRaw =
     erplyProduct.__extractedBarcode ??
     erplyProduct.EAN ??
@@ -112,7 +107,7 @@ function mapErplyMinimal(erplyProduct) {
         erplyProduct.basePrice
     ) || 0;
 
-  // ВАЖНО: берём доступный остаток и не допускаем минуса
+  // из getProducts обычно стока нет, но на всякий случай оставим
   const stock = extractAvailableStock(erplyProduct);
 
   const brand =
@@ -134,6 +129,7 @@ function mapErplyMinimal(erplyProduct) {
 
 // создаём/обновляем товар по данным из Erply
 async function upsertFromErply(erplyProduct) {
+  const minimal = mapErplyMinimal(erplyProduct);
   const {
     erplyId,
     erplySKU,
@@ -141,9 +137,17 @@ async function upsertFromErply(erplyProduct) {
     nameStr,
     descStr,
     price,
-    stock,
     brand,
-  } = mapErplyMinimal(erplyProduct);
+  } = minimal;
+
+  // отдельным запросом тянем реальный сток из getProductStock
+  let stock = minimal.stock;
+  if (erplyId) {
+    const stockFromErp = await fetchStockByProductId(erplyId);
+    if (Number.isFinite(stockFromErp)) {
+      stock = stockFromErp;
+    }
+  }
 
   const categoryId = await ensureDefaultCategoryId();
 
@@ -165,12 +169,12 @@ async function upsertFromErply(erplyProduct) {
       name: name_i18n,
       description: description_i18n,
       price,
-      stock, // уже обрезано до 0, если было отрицательное
+      stock,
       barcode: barcode || undefined,
 
       category: categoryId,
       subcategory: undefined,
-      images: [], // картинки из Erply не тянем
+      images: [],
       brand: brand || undefined,
       isFeatured: false,
       isActive: true,
@@ -201,7 +205,7 @@ async function upsertFromErply(erplyProduct) {
   existing.name = name_i18n;
   existing.description = description_i18n;
   existing.price = price;
-  existing.stock = stock; // здесь тоже уже нет отрицательных значений
+  existing.stock = stock;
 
   if (barcode) existing.barcode = barcode;
   if (brand !== undefined) existing.brand = brand || undefined;
@@ -209,7 +213,6 @@ async function upsertFromErply(erplyProduct) {
   existing.category = categoryId;
   existing.needsCategorization = true;
 
-  // свои картинки не трогаем
   if (erplyId) existing.erplyId = erplyId;
   if (erplySKU) existing.erplySKU = erplySKU;
 
@@ -233,15 +236,22 @@ async function upsertFromErply(erplyProduct) {
   return existing;
 }
 
-// синк остатка И ЦЕНЫ по erplyId (кнопка на странице продукта)
+// синк остатка и цены по erplyId (кнопка "Sync" в админке)
 async function syncPriceStockByErplyId(erplyId) {
   const { fetchProductById } = require("../utils/erplyClient");
+
   const remote = await fetchProductById(erplyId);
   if (!remote) return null;
 
   const minimal = mapErplyMinimal(remote);
-  const stockFromErp = minimal.stock;
+  let stockFromErp = minimal.stock;
   const priceFromErp = minimal.price;
+
+  // по возможности берём сток из getProductStock
+  const stockFromStockApi = await fetchStockByProductId(erplyId);
+  if (Number.isFinite(stockFromStockApi)) {
+    stockFromErp = stockFromStockApi;
+  }
 
   const doc = await Product.findOne({ erplyId: String(erplyId) });
   if (!doc) return null;
